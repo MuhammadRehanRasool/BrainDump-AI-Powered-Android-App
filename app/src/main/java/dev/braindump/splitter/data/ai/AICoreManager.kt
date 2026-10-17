@@ -1,15 +1,13 @@
 package dev.braindump.splitter.data.ai
 
-import android.content.Context
-import android.content.pm.PackageManager
-import android.os.Build
-import com.google.ai.edge.aicore.ConnectionException
-import com.google.ai.edge.aicore.DownloadCallback
-import com.google.ai.edge.aicore.DownloadConfig
-import com.google.ai.edge.aicore.GenerativeAIException
-import com.google.ai.edge.aicore.GenerativeModel
-import com.google.ai.edge.aicore.generationConfig
-import dagger.hilt.android.qualifiers.ApplicationContext
+import com.google.mlkit.genai.common.DownloadStatus
+import com.google.mlkit.genai.common.FeatureStatus
+import com.google.mlkit.genai.common.GenAiException
+import com.google.mlkit.genai.prompt.Generation
+import com.google.mlkit.genai.prompt.GenerativeModel
+import com.google.mlkit.genai.prompt.SystemInstruction
+import com.google.mlkit.genai.prompt.TextPart
+import com.google.mlkit.genai.prompt.generateContentRequest
 import dev.braindump.splitter.domain.model.AiStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,10 +34,13 @@ sealed class SplitException(
     cause: Throwable? = null,
     val retryable: Boolean,
 ) : Exception(message, cause) {
-    /** AICore isn't on this device; retrying won't help. */
-    class Unsupported(message: String) : SplitException(message, retryable = false)
+    /** Gemini Nano can't run here; retrying won't help. */
+    class Unsupported(message: String, cause: Throwable? = null) : SplitException(message, cause, retryable = false)
 
-    /** Binding, download or inference hiccup; worth another go later. */
+    /** Not now: app in background, model downloading, or quota hit. Doesn't count as an attempt. */
+    class Deferred(message: String, cause: Throwable? = null) : SplitException(message, cause, retryable = true)
+
+    /** A one-off inference hiccup; worth another go. */
     class Transient(message: String, cause: Throwable? = null) : SplitException(message, cause, retryable = true)
 
     /** The model answered, but never with JSON that passed validation. */
@@ -49,63 +50,55 @@ sealed class SplitException(
 }
 
 /**
- * Thread-safe owner of the single on-device [GenerativeModel].
+ * Thread-safe owner of the ML Kit GenAI Prompt client, which runs the system Gemini Nano
+ * that AICore already has on the device (no app-private model copy).
  *
- * Gemini Nano runs one request at a time inside the AICore system service, so every
- * call is serialized through [mutex]. The experimental AI Edge SDK has no native
- * system-instruction or response-schema support, so the JSON contract is enforced by
- * a strict prompt, then a parser that validates and normalizes the result, then one
+ * Requests are serialized through [mutex] because AICore runs one inference at a time.
+ * The JSON contract is enforced in steps: a system instruction (when supported) with the
+ * schema and an example, then a parser that validates and normalizes the answer, then one
  * stricter regeneration if the first answer fails validation.
  */
 @Singleton
 class AICoreManager @Inject constructor(
-    @ApplicationContext private val context: Context,
     private val json: Json,
 ) {
     private val mutex = Mutex()
+    private val downloadMutex = Mutex()
 
     // Guarded by mutex.
-    private var model: GenerativeModel? = null
+    private var client: GenerativeModel? = null
+    private var systemPromptSupported: Boolean? = null
+    private var warmedUp = false
 
     private val _status = MutableStateFlow<AiStatus>(AiStatus.Unknown)
     val status: StateFlow<AiStatus> = _status.asStateFlow()
 
-    private val downloadCallback = object : DownloadCallback {
-        @Volatile
-        private var totalBytes = 0L
-
-        override fun onDownloadPending() {
-            _status.value = AiStatus.Downloading(downloadedBytes = 0L, totalBytes = 0L)
-        }
-
-        override fun onDownloadStarted(bytesToDownload: Long) {
-            totalBytes = bytesToDownload
-            _status.value = AiStatus.Downloading(downloadedBytes = 0L, totalBytes = bytesToDownload)
-        }
-
-        override fun onDownloadProgress(totalBytesDownloaded: Long) {
-            _status.value = AiStatus.Downloading(downloadedBytes = totalBytesDownloaded, totalBytes = totalBytes)
-        }
-
-        override fun onDownloadCompleted() {
-            _status.value = AiStatus.Checking
-        }
-
-        override fun onDownloadFailed(failureStatus: String, e: GenerativeAIException) {
-            _status.value = AiStatus.Unavailable("Gemini Nano download failed ($failureStatus)")
-        }
-
-        override fun onDownloadDidNotStart(e: GenerativeAIException) {
-            _status.value = AiStatus.Unavailable(e.message ?: "Gemini Nano download didn't start")
-        }
-    }
-
-    /** Binds AICore and prepares the model; failures are reflected in [status]. */
+    /** Checks availability, downloads the model if AICore offers one, and warms it up. */
     suspend fun warmUp() {
-        try {
-            mutex.withLock { ensureModelLocked() }
-        } catch (e: SplitException) {
-            // Already surfaced through status; the worker retries independently.
+        val featureStatus = try {
+            mutex.withLock { checkStatusLocked() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _status.value = AiStatus.Unavailable(describe(e))
+            return
+        }
+
+        when (featureStatus) {
+            FeatureStatus.AVAILABLE -> try {
+                mutex.withLock {
+                    if (!warmedUp) {
+                        clientLocked().warmup()
+                        warmedUp = true
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Warm-up only shaves latency off the first request; inference reports real errors.
+            }
+
+            FeatureStatus.DOWNLOADABLE, FeatureStatus.DOWNLOADING -> download()
         }
     }
 
@@ -114,19 +107,31 @@ class AICoreManager @Inject constructor(
         if (input.isEmpty()) throw SplitException.EmptyInput()
 
         return mutex.withLock {
-            val engine = ensureModelLocked()
+            val featureStatus = try {
+                checkStatusLocked()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw classify(e)
+            }
+            when (featureStatus) {
+                FeatureStatus.AVAILABLE -> Unit
+                FeatureStatus.DOWNLOADABLE, FeatureStatus.DOWNLOADING ->
+                    throw SplitException.Deferred("Gemini Nano is still downloading")
+                else -> throw SplitException.Unsupported(UNAVAILABLE_REASON)
+            }
+
+            val model = clientLocked()
+            val useSystemInstruction = systemPromptSupportedLocked(model)
             var lastProblem = "Gemini Nano returned no usable JSON"
+
             for (attempt in 0 until MAX_GENERATION_ATTEMPTS) {
                 val output = try {
-                    engine.generateContent(buildPrompt(input, strict = attempt > 0)).text
+                    generate(model, input, strict = attempt > 0, useSystemInstruction)
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: GenerativeAIException) {
-                    if (e is ConnectionException) releaseModelLocked()
-                    throw SplitException.Transient(e.message ?: "Gemini Nano inference failed", e)
                 } catch (e: Exception) {
-                    releaseModelLocked()
-                    throw SplitException.Transient(e.message ?: "Gemini Nano inference failed", e)
+                    throw classify(e)
                 }
 
                 if (output.isNullOrBlank()) {
@@ -134,69 +139,117 @@ class AICoreManager @Inject constructor(
                     continue
                 }
                 val parsed = parseBreakdown(output)
-                if (parsed != null) return@withLock parsed
+                if (parsed != null) {
+                    _status.value = AiStatus.Ready
+                    return@withLock parsed
+                }
                 lastProblem = "Gemini Nano's answer didn't match the task schema"
             }
             throw SplitException.MalformedOutput(lastProblem)
         }
     }
 
-    private suspend fun ensureModelLocked(): GenerativeModel {
-        model?.let { return it }
-
-        if (!isAiCoreInstalled()) {
-            val reason = "Gemini Nano (AICore) isn't available on this device"
-            _status.value = AiStatus.Unavailable(reason)
-            throw SplitException.Unsupported(reason)
+    private suspend fun generate(
+        model: GenerativeModel,
+        input: String,
+        strict: Boolean,
+        useSystemInstruction: Boolean,
+    ): String? {
+        val instruction = if (strict) SYSTEM_PROMPT + STRICT_SUFFIX else SYSTEM_PROMPT
+        val userTurn = "Input: $INPUT_OPEN$input$INPUT_CLOSE\nOutput:"
+        val request = if (useSystemInstruction) {
+            generateContentRequest(SystemInstruction(instruction), TextPart(userTurn)) { tune() }
+        } else {
+            generateContentRequest(TextPart("$instruction\n$userTurn")) { tune() }
         }
+        return model.generateContent(request).candidates.firstOrNull()?.text
+    }
 
-        if (_status.value !is AiStatus.Downloading) _status.value = AiStatus.Checking
-        val candidate = GenerativeModel(
-            generationConfig {
-                context = this@AICoreManager.context
-                temperature = TEMPERATURE
-                topK = TOP_K
-                candidateCount = 1
-                maxOutputTokens = MAX_OUTPUT_TOKENS
-            },
-            DownloadConfig(downloadCallback),
-        )
+    private fun com.google.mlkit.genai.prompt.GenerateContentRequest.Builder.tune() {
+        temperature = TEMPERATURE
+        topK = TOP_K
+        candidateCount = 1
+        maxOutputTokens = MAX_OUTPUT_TOKENS
+    }
+
+    private suspend fun checkStatusLocked(): Int {
+        val featureStatus = clientLocked().checkStatus()
+        when (featureStatus) {
+            FeatureStatus.AVAILABLE -> if (_status.value !is AiStatus.Ready) _status.value = AiStatus.Ready
+            FeatureStatus.DOWNLOADABLE, FeatureStatus.DOWNLOADING ->
+                if (_status.value !is AiStatus.Downloading) _status.value = AiStatus.Downloading(0L, 0L)
+            else -> _status.value = AiStatus.Unavailable(UNAVAILABLE_REASON)
+        }
+        return featureStatus
+    }
+
+    private suspend fun download() {
+        if (!downloadMutex.tryLock()) return // a download is already being tracked
         try {
-            candidate.prepareInferenceEngine()
+            val model = mutex.withLock { clientLocked() }
+            var totalBytes = 0L
+            model.download().collect { progress ->
+                when (progress) {
+                    is DownloadStatus.DownloadStarted -> {
+                        totalBytes = progress.bytesToDownload
+                        _status.value = AiStatus.Downloading(0L, totalBytes)
+                    }
+                    is DownloadStatus.DownloadProgress ->
+                        _status.value = AiStatus.Downloading(progress.totalBytesDownloaded, totalBytes)
+                    is DownloadStatus.DownloadCompleted -> _status.value = AiStatus.Ready
+                    is DownloadStatus.DownloadFailed -> _status.value = AiStatus.Unavailable(describe(progress.e))
+                }
+            }
         } catch (e: CancellationException) {
-            candidate.close()
-            if (_status.value is AiStatus.Checking) _status.value = AiStatus.Unknown
             throw e
         } catch (e: Exception) {
-            candidate.close()
-            val reason = e.message?.takeIf { it.isNotBlank() } ?: "AICore couldn't prepare Gemini Nano"
-            // Keep showing download progress if the model is still arriving.
-            if (_status.value !is AiStatus.Downloading) _status.value = AiStatus.Unavailable(reason)
-            throw SplitException.Transient(reason, e)
+            _status.value = AiStatus.Unavailable(describe(e))
+        } finally {
+            downloadMutex.unlock()
         }
-        model = candidate
-        _status.value = AiStatus.Ready
-        return candidate
     }
 
-    private fun releaseModelLocked() {
-        model?.close()
-        model = null
-        _status.value = AiStatus.Unknown
+    private fun clientLocked(): GenerativeModel =
+        client ?: Generation.getClient().also { client = it }
+
+    private suspend fun systemPromptSupportedLocked(model: GenerativeModel): Boolean {
+        systemPromptSupported?.let { return it }
+        val supported = try {
+            model.isSystemPromptAvailable()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false
+        }
+        systemPromptSupported = supported
+        return supported
     }
 
-    @Suppress("DEPRECATION")
-    private fun isAiCoreInstalled(): Boolean = try {
-        val packageManager = context.packageManager
-        val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            packageManager.getApplicationInfo(AICORE_PACKAGE, PackageManager.ApplicationInfoFlags.of(0))
-        } else {
-            packageManager.getApplicationInfo(AICORE_PACKAGE, 0)
+    private fun classify(e: Exception): SplitException {
+        if (e is SplitException) return e
+        val message = describe(e)
+        if (e !is GenAiException) return SplitException.Transient(message, e)
+        return when (e.errorCode) {
+            GenAiException.ErrorCode.BACKGROUND_USE_BLOCKED,
+            GenAiException.ErrorCode.PER_APP_BATTERY_USE_QUOTA_EXCEEDED,
+            GenAiException.ErrorCode.BUSY,
+            GenAiException.ErrorCode.NOT_AVAILABLE,
+            GenAiException.ErrorCode.NOT_ENOUGH_DISK_SPACE -> SplitException.Deferred(message, e)
+
+            GenAiException.ErrorCode.NOT_SUPPORTED,
+            GenAiException.ErrorCode.AICORE_INCOMPATIBLE,
+            GenAiException.ErrorCode.NEEDS_SYSTEM_UPDATE,
+            GenAiException.ErrorCode.REQUEST_TOO_LARGE -> {
+                _status.value = AiStatus.Unavailable(message)
+                SplitException.Unsupported(message, e)
+            }
+
+            else -> SplitException.Transient(message, e)
         }
-        info.enabled
-    } catch (e: PackageManager.NameNotFoundException) {
-        false
     }
+
+    private fun describe(e: Throwable): String =
+        e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
 
     internal fun parseBreakdown(modelOutput: String): IdeaBreakdown? {
         val start = modelOutput.indexOf('{')
@@ -241,13 +294,6 @@ class AICoreManager @Inject constructor(
     private fun sanitize(raw: String): String =
         raw.replace(INPUT_OPEN, "").replace(INPUT_CLOSE, "").trim().take(MAX_INPUT_CHARS)
 
-    private fun buildPrompt(input: String, strict: Boolean): String = buildString {
-        append(SYSTEM_PROMPT)
-        if (strict) append(STRICT_SUFFIX)
-        append("\nInput: ").append(INPUT_OPEN).append(input).append(INPUT_CLOSE)
-        append("\nOutput:")
-    }
-
     @Serializable
     internal data class IdeaBreakdownDto(
         @SerialName("idea_title") val ideaTitle: String = "",
@@ -257,15 +303,13 @@ class AICoreManager @Inject constructor(
     )
 
     private companion object {
-        const val AICORE_PACKAGE = "com.google.android.aicore"
-
         const val TEMPERATURE = 0.2f
         const val TOP_K = 16
         const val MAX_OUTPUT_TOKENS = 256
         const val MAX_GENERATION_ATTEMPTS = 2
 
-        // Gemini Nano's input window is small; the prompt itself uses roughly 350 tokens.
-        const val MAX_INPUT_CHARS = 1_500
+        // Leaves comfortable room for the instruction inside Gemini Nano's input window.
+        const val MAX_INPUT_CHARS = 4_000
         const val REQUIRED_TASKS = 3
         const val MAX_ANCHORS = 5
         const val MAX_ANCHOR_CHARS = 40
@@ -273,6 +317,9 @@ class AICoreManager @Inject constructor(
 
         const val INPUT_OPEN = "<<<"
         const val INPUT_CLOSE = ">>>"
+
+        const val UNAVAILABLE_REASON =
+            "Gemini Nano isn't available. Check that AICore is up to date in the Play Store."
 
         val LIST_MARKER = Regex("""^\s*(?:[-*•]+|\d+[.)])\s*""")
 

@@ -26,7 +26,7 @@ android {
 
     defaultConfig {
         applicationId = "dev.braindump.splitter"
-        minSdk = 31 // AICore SDK floor
+        minSdk = 31 // on-device SpeechRecognizer floor
         targetSdk = 35
         versionCode = ciBuildNumber
         versionName = "1.0.$ciBuildNumber"
@@ -127,13 +127,10 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
 
-    implementation(libs.androidx.work.runtime.ktx)
-
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
-    implementation(libs.androidx.hilt.work)
+    ksp(libs.kotlin.metadata.jvm)
     implementation(libs.androidx.hilt.navigation.compose)
-    ksp(libs.androidx.hilt.compiler)
 
-    implementation(libs.google.ai.edge.aicore)
+    implementation(libs.mlkit.genai.prompt)
 }

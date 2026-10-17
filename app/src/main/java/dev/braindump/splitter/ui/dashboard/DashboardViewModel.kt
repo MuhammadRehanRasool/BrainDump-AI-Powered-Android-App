@@ -45,13 +45,16 @@ class DashboardViewModel @Inject constructor(
         DashboardUiState(sections = sections, aiStatus = aiStatus, isLoading = false)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardUiState())
 
+    /** Gemini Nano only serves foreground apps, so this is where the queue gets drained. */
     fun onForeground() {
-        viewModelScope.launch { repository.resumePendingWork() }
-        viewModelScope.launch { repository.warmUpAi() }
+        viewModelScope.launch {
+            repository.warmUpAi()
+            repository.splitPending()
+        }
     }
 
     fun capture(text: String) {
-        appScope.launch { repository.capture(text) }
+        appScope.launch { repository.captureAndSplit(text) }
     }
 
     fun toggleTask(ideaId: Long, taskIndex: Int) {

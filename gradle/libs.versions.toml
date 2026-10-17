@@ -1,18 +1,19 @@
 [versions]
-agp = "8.7.3"
-kotlin = "2.1.0"
-ksp = "2.1.0-1.0.29"
-hilt = "2.55"
+agp = "8.13.2"
+# ML Kit GenAI is compiled with Kotlin 2.3.21, so the compiler has to match it.
+kotlin = "2.3.21"
+ksp = "2.3.12"
+# Last Hilt release that supports AGP 8; 2.59+ needs AGP 9 and Gradle 9.1.
+hilt = "2.58"
 androidxHilt = "1.2.0"
 coreKtx = "1.15.0"
 activityCompose = "1.9.3"
 lifecycle = "2.8.7"
-composeBom = "2024.12.01"
-room = "2.6.1"
-work = "2.10.0"
-coroutines = "1.9.0"
-serialization = "1.8.0"
-aicore = "0.0.1-exp02"
+composeBom = "2025.06.01"
+room = "2.7.2"
+coroutines = "1.10.2"
+serialization = "1.9.0"
+mlkitGenai = "1.0.0-beta4"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -33,20 +34,18 @@ androidx-room-runtime = { group = "androidx.room", name = "room-runtime", versio
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 
-androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "work" }
-
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-android-compiler", version.ref = "hilt" }
-androidx-hilt-work = { group = "androidx.hilt", name = "hilt-work", version.ref = "androidxHilt" }
-androidx-hilt-compiler = { group = "androidx.hilt", name = "hilt-compiler", version.ref = "androidxHilt" }
 androidx-hilt-navigation-compose = { group = "androidx.hilt", name = "hilt-navigation-compose", version.ref = "androidxHilt" }
+# Lets Hilt's processor read Kotlin 2.3 class metadata (it ships with the 2.2 reader).
+kotlin-metadata-jvm = { group = "org.jetbrains.kotlin", name = "kotlin-metadata-jvm", version.ref = "kotlin" }
 
 kotlinx-coroutines-bom = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-bom", version.ref = "coroutines" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
 
-# Google AI Edge SDK — on-device Gemini Nano through the system AICore service.
-google-ai-edge-aicore = { group = "com.google.ai.edge.aicore", name = "aicore", version.ref = "aicore" }
+# ML Kit GenAI Prompt API: the system Gemini Nano served by AICore.
+mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenai" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

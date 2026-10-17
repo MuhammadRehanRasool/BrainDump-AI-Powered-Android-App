@@ -6,14 +6,15 @@ import dev.braindump.splitter.data.local.IdeaDao
 import dev.braindump.splitter.data.local.IdeaEntity
 import dev.braindump.splitter.data.local.toDomain
 import dev.braindump.splitter.domain.model.AiStatus
+import dev.braindump.splitter.domain.model.CaptureOutcome
 import dev.braindump.splitter.domain.model.Idea
 import dev.braindump.splitter.domain.model.IdeaStatus
 import dev.braindump.splitter.domain.repository.IdeaRepository
-import dev.braindump.splitter.domain.repository.ProcessResult
-import dev.braindump.splitter.work.SplitScheduler
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -21,20 +22,30 @@ import javax.inject.Singleton
 class IdeaRepositoryImpl @Inject constructor(
     private val dao: IdeaDao,
     private val ai: AICoreManager,
-    private val scheduler: SplitScheduler,
 ) : IdeaRepository {
+
+    // One drain at a time; a caller that waits here sees everything queued before it.
+    private val drainMutex = Mutex()
 
     override val aiStatus: StateFlow<AiStatus> get() = ai.status
 
     override fun observeIdeas(): Flow<List<Idea>> =
         dao.observeAll().map { entities -> entities.map(IdeaEntity::toDomain) }
 
-    override suspend fun capture(rawInput: String) {
+    override suspend fun captureAndSplit(rawInput: String): CaptureOutcome {
         val text = rawInput.trim()
-        if (text.isEmpty()) return
+        if (text.isEmpty()) return CaptureOutcome.Empty
         val now = System.currentTimeMillis()
-        dao.insert(IdeaEntity(rawInput = text, createdAt = now, updatedAt = now))
-        scheduler.enqueue()
+        val id = dao.insert(IdeaEntity(rawInput = text, createdAt = now, updatedAt = now))
+
+        splitPending()
+
+        val idea = dao.getById(id) ?: return CaptureOutcome.Empty
+        return when (idea.status) {
+            IdeaStatus.READY -> CaptureOutcome.Split(idea.ideaTitle.orEmpty())
+            IdeaStatus.PENDING -> CaptureOutcome.Queued(idea.lastError)
+            IdeaStatus.FAILED -> CaptureOutcome.Failed(idea.lastError)
+        }
     }
 
     override suspend fun toggleTask(ideaId: Long, taskIndex: Int) {
@@ -43,29 +54,28 @@ class IdeaRepositoryImpl @Inject constructor(
     }
 
     override suspend fun retry(ideaId: Long) {
-        if (dao.resetFailed(ideaId, System.currentTimeMillis()) > 0) scheduler.enqueue()
+        if (dao.resetFailed(ideaId, System.currentTimeMillis()) > 0) splitPending()
     }
 
     override suspend fun delete(ideaId: Long) {
         dao.deleteById(ideaId)
     }
 
-    override suspend fun resumePendingWork() {
-        if (dao.countPending() > 0) scheduler.enqueue()
-    }
-
     override suspend fun warmUpAi() {
         ai.warmUp()
     }
 
-    override suspend fun processPending(): ProcessResult {
+    override suspend fun splitPending() {
+        drainMutex.withLock { drain() }
+    }
+
+    private suspend fun drain() {
         val handled = HashSet<Long>()
-        var retryLater = false
 
         // Re-query after each pass so ideas captured mid-run are picked up too.
         while (true) {
             val batch = dao.pendingIds().filterNot { it in handled }
-            if (batch.isEmpty()) break
+            if (batch.isEmpty()) return
 
             for (id in batch) {
                 handled += id
@@ -82,11 +92,14 @@ class IdeaRepositoryImpl @Inject constructor(
                             immediateMicroTasks = breakdown.immediateMicroTasks,
                             completedMask = 0,
                             status = IdeaStatus.READY,
-                            attempts = idea.attempts + 1,
                             lastError = null,
                             updatedAt = System.currentTimeMillis(),
                         )
                     )
+                } catch (e: SplitException.Deferred) {
+                    // Every other queued idea would hit the same wall; stop and wait for the next foreground.
+                    dao.update(idea.copy(lastError = e.message, updatedAt = System.currentTimeMillis()))
+                    return
                 } catch (e: SplitException) {
                     val attempts = idea.attempts + 1
                     val giveUp = !e.retryable || attempts >= MAX_ATTEMPTS
@@ -98,11 +111,9 @@ class IdeaRepositoryImpl @Inject constructor(
                             updatedAt = System.currentTimeMillis(),
                         )
                     )
-                    if (!giveUp) retryLater = true
                 }
             }
         }
-        return if (retryLater) ProcessResult.RETRY_LATER else ProcessResult.DONE
     }
 
     private companion object {

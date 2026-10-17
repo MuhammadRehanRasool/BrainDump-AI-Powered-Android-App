@@ -107,7 +107,7 @@ fun IdeaCard(
             }
 
             when (idea.status) {
-                IdeaStatus.PENDING -> LinearProgressIndicator(
+                IdeaStatus.PENDING -> if (idea.error == null) LinearProgressIndicator(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 12.dp),
@@ -131,7 +131,11 @@ fun IdeaCard(
 
 @Composable
 private fun statusLine(idea: Idea, time: String): String = when (idea.status) {
-    IdeaStatus.PENDING -> "$time · ${stringResource(R.string.idea_splitting)}"
+    IdeaStatus.PENDING -> if (idea.error == null) {
+        "$time · ${stringResource(R.string.idea_splitting)}"
+    } else {
+        "$time · ${stringResource(R.string.idea_waiting)}"
+    }
     IdeaStatus.FAILED -> "$time · ${stringResource(R.string.idea_failed)}"
     IdeaStatus.READY -> "$time · " + stringResource(R.string.idea_progress, idea.completedCount, idea.tasks.size)
 }
@@ -193,7 +197,7 @@ private fun ExpandedDetails(
             )
         }
 
-        if (idea.status == IdeaStatus.FAILED && !idea.error.isNullOrBlank()) {
+        if (idea.status != IdeaStatus.READY && !idea.error.isNullOrBlank()) {
             Text(
                 text = idea.error,
                 style = MaterialTheme.typography.bodySmall,

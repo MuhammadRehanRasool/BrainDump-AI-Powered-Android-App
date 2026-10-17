@@ -3,4 +3,13 @@
     <color name="window_background">#FFFDF8FD</color>
     <color name="ic_launcher_background">#FF1B1530</color>
     <color name="ic_launcher_foreground">#FFFFD54F</color>
+    <color name="ic_quick_background">#FF3B2A7A</color>
+
+    <!-- Widget follows the wallpaper palette (Material You system colors, API 31+). -->
+    <color name="widget_background">@android:color/system_neutral1_50</color>
+    <color name="widget_pill">@android:color/system_accent1_100</color>
+    <color name="widget_text">@android:color/system_accent1_900</color>
+    <color name="widget_mic_background">@android:color/system_accent1_600</color>
+    <color name="widget_mic_icon">@android:color/system_accent1_0</color>
+    <color name="widget_ripple">#33000000</color>
 </resources>

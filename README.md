@@ -1,19 +1,20 @@
 # dumpd
 
-**BrainDump Task Splitter.** Dump a messy idea by voice or text in one tap. Gemini Nano splits it into a title, a concept, tech anchors and exactly 3 micro tasks, all on-device. The app has no INTERNET permission.
+**BrainDump Task Splitter.** Dump a messy idea by voice or text in one tap. Gemini Nano, the copy that's already on your phone, splits it into a title, a concept, tech anchors and exactly 3 micro tasks. The app has no INTERNET permission.
 
 ## How it flows
 
-1. **Capture.** Use the Quick Settings tile, a launcher shortcut (long-press the icon), or the Dump button. The raw text goes into Room right away and the sheet closes.
-2. **Split.** An expedited WorkManager job sends queued ideas through `AICoreManager`, which talks to Gemini Nano via AICore. Strict prompt, then JSON validation, then one stricter retry if the answer doesn't validate.
+1. **Capture.** Use the Quick Settings tile, a launcher shortcut (long-press the icon), or the Dump button. Voice runs through the phone's on-device speech recognizer and fills the text box live.
+2. **Split.** The idea goes into Room, then straight to Gemini Nano via the ML Kit GenAI Prompt API while the sheet is still open. That usually takes a second or two. Then the sheet closes and a toast shows the title.
 3. **Act.** The dashboard groups ideas by day. Tap a card to see its 3 checkboxes.
 
-If AICore isn't ready (model still downloading, service busy), the idea stays queued and is retried up to 3 times. It also retries when you open the app. Failed ideas get a Retry button.
+Gemini Nano only answers apps in the foreground. If you swipe the sheet away mid-split, or the model isn't ready, the idea is kept and split the next time you open the app. Failed ideas get a Retry button.
 
 ## Device requirements
 
 - Android 12+ (SDK 31), arm64.
-- AICore with Gemini Nano (Pixel 9 series and other supported devices). The Google AI Edge SDK is **experimental**: AICore may need a system update and access to the experimental Gemini Nano program before it will serve this app. Without it the app still captures and stores ideas, and the dashboard shows why AI is offline.
+- A phone with Gemini Nano in AICore (Pixel 9/10 series and other supported devices), with AICore and Private Compute Services updated from the Play Store.
+- Voice: an on-device speech pack for your language. If it's missing, the app asks the system to download it.
 
 ## CI
 

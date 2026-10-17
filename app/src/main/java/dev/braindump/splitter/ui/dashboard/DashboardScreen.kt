@@ -54,6 +54,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -62,6 +63,7 @@ import dev.braindump.splitter.R
 import dev.braindump.splitter.domain.model.AiStatus
 import dev.braindump.splitter.tile.BrainDumpTileService
 import dev.braindump.splitter.ui.capture.CaptureSheet
+import dev.braindump.splitter.ui.capture.QuickShortcuts
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -112,9 +114,7 @@ fun DashboardScreen(
                         )
                     }
                 },
-                actions = {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) OverflowMenu()
-                },
+                actions = { OverflowMenu() },
                 scrollBehavior = scrollBehavior,
             )
         },
@@ -174,6 +174,8 @@ fun DashboardScreen(
     if (showCapture) {
         CaptureSheet(
             startWithVoice = false,
+            splitting = false,
+            hideOnSubmit = true,
             onSubmit = onCapture,
             onDismiss = { showCapture = false },
         )
@@ -279,23 +281,44 @@ private fun EmptyState(modifier: Modifier = Modifier) {
     }
 }
 
-@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 private fun OverflowMenu() {
     val context = LocalContext.current
+    val canPin = remember(context) { ShortcutManagerCompat.isRequestPinShortcutSupported(context) }
+    val canAddTile = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    if (!canPin && !canAddTile) return
+
     var open by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { open = true }) {
             Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.dashboard_more))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.dashboard_add_tile)) },
-                onClick = {
-                    open = false
-                    requestAddTile(context)
-                },
-            )
+            if (canAddTile) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.dashboard_add_tile)) },
+                    onClick = {
+                        open = false
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) requestAddTile(context)
+                    },
+                )
+            }
+            if (canPin) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.dashboard_pin_voice)) },
+                    onClick = {
+                        open = false
+                        QuickShortcuts.pinToHomeScreen(context, voice = true)
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.dashboard_pin_type)) },
+                    onClick = {
+                        open = false
+                        QuickShortcuts.pinToHomeScreen(context, voice = false)
+                    },
+                )
+            }
         }
     }
 }
