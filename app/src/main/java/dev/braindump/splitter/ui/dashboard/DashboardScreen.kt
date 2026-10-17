@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -82,6 +83,7 @@ fun DashboardRoute(viewModel: DashboardViewModel = hiltViewModel()) {
         onToggleTask = viewModel::toggleTask,
         onRetry = viewModel::retry,
         onDelete = viewModel::delete,
+        onUsePreviewModelChange = viewModel::setUsePreviewModel,
     )
 }
 
@@ -93,6 +95,7 @@ fun DashboardScreen(
     onToggleTask: (Long, Int) -> Unit,
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
+    onUsePreviewModelChange: (Boolean) -> Unit,
 ) {
     var showCapture by rememberSaveable { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -114,7 +117,12 @@ fun DashboardScreen(
                         )
                     }
                 },
-                actions = { OverflowMenu() },
+                actions = {
+                    OverflowMenu(
+                        usePreviewModel = state.usePreviewModel,
+                        onUsePreviewModelChange = onUsePreviewModelChange,
+                    )
+                },
                 scrollBehavior = scrollBehavior,
             )
         },
@@ -189,7 +197,9 @@ private fun aiStatusLabel(status: AiStatus): String = when (status) {
     is AiStatus.Downloading -> status.percent
         ?.let { stringResource(R.string.ai_status_downloading_percent, it) }
         ?: stringResource(R.string.ai_status_downloading)
-    AiStatus.Ready -> stringResource(R.string.ai_status_ready)
+    is AiStatus.Ready -> status.modelName
+        ?.let { stringResource(R.string.ai_status_ready_model, it) }
+        ?: stringResource(R.string.ai_status_ready)
     is AiStatus.Unavailable -> stringResource(R.string.ai_status_unavailable)
 }
 
@@ -282,18 +292,27 @@ private fun EmptyState(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun OverflowMenu() {
+private fun OverflowMenu(
+    usePreviewModel: Boolean,
+    onUsePreviewModelChange: (Boolean) -> Unit,
+) {
     val context = LocalContext.current
     val canPin = remember(context) { ShortcutManagerCompat.isRequestPinShortcutSupported(context) }
     val canAddTile = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-    if (!canPin && !canAddTile) return
-
     var open by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { open = true }) {
             Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.dashboard_more))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.dashboard_use_preview)) },
+                trailingIcon = { Checkbox(checked = usePreviewModel, onCheckedChange = null) },
+                onClick = {
+                    open = false
+                    onUsePreviewModelChange(!usePreviewModel)
+                },
+            )
             if (canAddTile) {
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.dashboard_add_tile)) },

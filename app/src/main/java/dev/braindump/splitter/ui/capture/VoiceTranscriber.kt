@@ -14,25 +14,44 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.google.mlkit.genai.common.FeatureStatus
+import com.google.mlkit.genai.common.audio.AudioSource
+import com.google.mlkit.genai.speechrecognition.SpeechRecognition
+import com.google.mlkit.genai.speechrecognition.SpeechRecognizerOptions
+import com.google.mlkit.genai.speechrecognition.SpeechRecognizerResponse
+import com.google.mlkit.genai.speechrecognition.speechRecognizerOptions
+import com.google.mlkit.genai.speechrecognition.speechRecognizerRequest
 import dev.braindump.splitter.R
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Locale
+import com.google.mlkit.genai.speechrecognition.SpeechRecognizer as GenAiSpeechRecognizer
 
 /**
- * Live dictation through the phone's own on-device recognizer (on Pixel: the same offline
- * engine behind Recorder and Live Caption). Unlike the RecognizerIntent popup it never
- * goes through the Google app, so region restrictions on voice search don't apply.
- * Falls back to the default system recognizer, still preferring offline, only when the
- * device has no on-device service.
+ * Live dictation that never leaves the phone.
+ *
+ * First choice is ML Kit GenAI Speech Recognition in Advanced mode, which on Pixel 10 runs
+ * on Gemini Nano through AICore (the SDK drops to its Basic on-device model elsewhere).
+ * When that isn't ready, it uses the platform's on-device recognizer (on Pixel: the offline
+ * engine behind Recorder, Live Caption and Live Transcribe). Neither goes through the Google
+ * app, so region restrictions on voice search don't apply.
  */
 @Stable
-class VoiceTranscriber(private val context: Context) : RecognitionListener {
+class VoiceTranscriber(
+    private val context: Context,
+    private val scope: CoroutineScope,
+) : RecognitionListener {
 
     var isListening by mutableStateOf(false)
         private set
 
-    /** Words recognized so far in the current utterance. */
+    /** Words recognized so far in the current dictation. */
     var partialText by mutableStateOf("")
         private set
 
@@ -40,36 +59,190 @@ class VoiceTranscriber(private val context: Context) : RecognitionListener {
     var level by mutableFloatStateOf(0f)
         private set
 
-    private var recognizer: SpeechRecognizer? = null
     private var onFinal: (String) -> Unit = {}
     private var onMessage: (Int) -> Unit = {}
+
+    // ML Kit GenAI path.
+    private var genAiRecognizer: GenAiSpeechRecognizer? = null
+    private var genAiUnusable = false
+    private var genAiDownloading = false
+    private var genAiSession: Job? = null
+    private var silenceTimer: Job? = null
+
+    // Platform fallback.
+    private var recognizer: SpeechRecognizer? = null
 
     fun start(onFinal: (String) -> Unit, onMessage: (Int) -> Unit) {
         if (isListening) return
         this.onFinal = onFinal
         this.onMessage = onMessage
-
-        val activeRecognizer = recognizer ?: createRecognizer()?.also { recognizer = it }
-        if (activeRecognizer == null) {
-            onMessage(R.string.voice_unavailable)
-            return
-        }
         partialText = ""
         level = 0f
         isListening = true
-        activeRecognizer.startListening(recognitionIntent())
+
+        if (genAiUnusable) {
+            startPlatform()
+            return
+        }
+        genAiSession = scope.launch {
+            val genAi = readyGenAiRecognizer()
+            if (genAi == null) startPlatform() else listenWithGenAi(genAi)
+        }
     }
 
     /** Stops listening; whatever was heard is still delivered through onFinal. */
     fun stop() {
-        recognizer?.stopListening()
+        val genAi = genAiRecognizer
+        if (genAiSession?.isActive == true && genAi != null) {
+            scope.launch { stopGenAi(genAi) }
+        } else {
+            recognizer?.stopListening()
+        }
     }
 
     fun release() {
+        silenceTimer?.cancel()
+        genAiSession?.cancel()
+        genAiSession = null
+        genAiRecognizer?.close()
+        genAiRecognizer = null
         recognizer?.destroy()
         recognizer = null
         isListening = false
         partialText = ""
+    }
+
+    /** The GenAI recognizer when its model is on the device; otherwise null, kicking off a download if offered. */
+    private suspend fun readyGenAiRecognizer(): GenAiSpeechRecognizer? {
+        val genAi = genAiRecognizer ?: SpeechRecognition.getClient(
+            speechRecognizerOptions {
+                locale = Locale.getDefault()
+                preferredMode = SpeechRecognizerOptions.Mode.MODE_ADVANCED
+            }
+        ).also { genAiRecognizer = it }
+
+        val status = try {
+            genAi.checkStatus()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            FeatureStatus.UNAVAILABLE
+        }
+        return when (status) {
+            FeatureStatus.AVAILABLE -> genAi
+            FeatureStatus.DOWNLOADABLE, FeatureStatus.DOWNLOADING -> {
+                downloadGenAi(genAi)
+                null
+            }
+            else -> {
+                genAiUnusable = true
+                null
+            }
+        }
+    }
+
+    /** Fetches the model in the background so the next dictation can use it. */
+    private fun downloadGenAi(genAi: GenAiSpeechRecognizer) {
+        if (genAiDownloading) return
+        genAiDownloading = true
+        scope.launch {
+            try {
+                genAi.download().collect {}
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The platform recognizer keeps working; try again on a later launch.
+            } finally {
+                genAiDownloading = false
+            }
+        }
+    }
+
+    private suspend fun listenWithGenAi(genAi: GenAiSpeechRecognizer) {
+        val committed = StringBuilder()
+        var failed = false
+        val sessionCap = scope.launch {
+            delay(MAX_SESSION_MS)
+            stopGenAi(genAi)
+        }
+        try {
+            genAi.startRecognition(speechRecognizerRequest { audioSource = AudioSource.fromMic() })
+                .collect { response ->
+                    when (response) {
+                        is SpeechRecognizerResponse.PartialTextResponse -> {
+                            silenceTimer?.cancel()
+                            partialText = join(committed, response.text)
+                            level = PEAK_LEVEL
+                        }
+                        is SpeechRecognizerResponse.FinalTextResponse -> {
+                            val segment = response.text.trim()
+                            if (segment.isNotEmpty()) {
+                                if (committed.isNotEmpty()) committed.append(' ')
+                                committed.append(segment)
+                            }
+                            partialText = committed.toString()
+                            level = 0f
+                            // A pause after a finished phrase ends the dictation, like the platform recognizer.
+                            silenceTimer?.cancel()
+                            silenceTimer = scope.launch {
+                                delay(SILENCE_MS)
+                                stopGenAi(genAi)
+                            }
+                        }
+                        is SpeechRecognizerResponse.ErrorResponse -> failed = true
+                        else -> Unit // CompletedResponse: the flow ends right after.
+                    }
+                }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            failed = true
+        } finally {
+            sessionCap.cancel()
+            silenceTimer?.cancel()
+        }
+
+        val heard = committed.toString().trim().ifEmpty { partialText.trim() }
+        if (failed && heard.isEmpty()) {
+            // Don't keep failing on this path; the platform recognizer takes over from here.
+            genAiUnusable = true
+            genAiRecognizer?.close()
+            genAiRecognizer = null
+            partialText = ""
+            startPlatform()
+            return
+        }
+        isListening = false
+        partialText = ""
+        level = 0f
+        if (heard.isNotEmpty()) onFinal(heard)
+    }
+
+    private suspend fun stopGenAi(genAi: GenAiSpeechRecognizer) {
+        try {
+            genAi.stopRecognition()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            genAiSession?.cancel()
+            isListening = false
+            partialText = ""
+            level = 0f
+        }
+    }
+
+    private fun join(committed: CharSequence, partial: String): String =
+        if (committed.isEmpty()) partial.trim() else "$committed ${partial.trim()}".trimEnd()
+
+    private fun startPlatform() {
+        val activeRecognizer = recognizer ?: createRecognizer()?.also { recognizer = it }
+        if (activeRecognizer == null) {
+            isListening = false
+            onMessage(R.string.voice_unavailable)
+            return
+        }
+        isListening = true
+        activeRecognizer.startListening(recognitionIntent())
     }
 
     private fun createRecognizer(): SpeechRecognizer? {
@@ -148,12 +321,22 @@ class VoiceTranscriber(private val context: Context) : RecognitionListener {
     override fun onBufferReceived(buffer: ByteArray?) = Unit
     override fun onEndOfSpeech() = Unit
     override fun onEvent(eventType: Int, params: Bundle?) = Unit
+
+    private companion object {
+        /** Pause after a finished phrase that ends the dictation. */
+        const val SILENCE_MS = 2_500L
+        const val MAX_SESSION_MS = 90_000L
+
+        /** The GenAI stream has no input level, so the indicator pulses while words arrive. */
+        const val PEAK_LEVEL = 0.6f
+    }
 }
 
 @Composable
 fun rememberVoiceTranscriber(): VoiceTranscriber {
     val context = LocalContext.current
-    val transcriber = remember(context) { VoiceTranscriber(context) }
+    val scope = rememberCoroutineScope()
+    val transcriber = remember(context, scope) { VoiceTranscriber(context, scope) }
     DisposableEffect(transcriber) {
         onDispose { transcriber.release() }
     }

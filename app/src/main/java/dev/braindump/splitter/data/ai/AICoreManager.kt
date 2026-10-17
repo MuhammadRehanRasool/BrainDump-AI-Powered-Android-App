@@ -5,9 +5,13 @@ import com.google.mlkit.genai.common.FeatureStatus
 import com.google.mlkit.genai.common.GenAiException
 import com.google.mlkit.genai.prompt.Generation
 import com.google.mlkit.genai.prompt.GenerativeModel
+import com.google.mlkit.genai.prompt.ModelPreference
+import com.google.mlkit.genai.prompt.ModelReleaseStage
 import com.google.mlkit.genai.prompt.SystemInstruction
 import com.google.mlkit.genai.prompt.TextPart
 import com.google.mlkit.genai.prompt.generateContentRequest
+import com.google.mlkit.genai.prompt.generationConfig
+import com.google.mlkit.genai.prompt.modelConfig
 import dev.braindump.splitter.domain.model.AiStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -61,17 +65,33 @@ sealed class SplitException(
 @Singleton
 class AICoreManager @Inject constructor(
     private val json: Json,
+    private val settings: AiSettings,
 ) {
     private val mutex = Mutex()
     private val downloadMutex = Mutex()
 
     // Guarded by mutex.
     private var client: GenerativeModel? = null
+    private var activeOption: ModelOption? = null
+    private var activeModelName: String? = null
     private var systemPromptSupported: Boolean? = null
     private var warmedUp = false
 
+    // Preview builds that said AVAILABLE but then failed inference (e.g. the Pixel 10 Nano 4
+    // FULL package missing its TPU config). Skipped until preview is toggled again.
+    private val brokenOptions = mutableSetOf<ModelOption>()
+
     private val _status = MutableStateFlow<AiStatus>(AiStatus.Unknown)
     val status: StateFlow<AiStatus> = _status.asStateFlow()
+
+    /** Drops the current client so the next call re-runs model selection (e.g. after a settings change). */
+    suspend fun resetModel() {
+        mutex.withLock {
+            dropClientLocked()
+            brokenOptions.clear()
+            _status.value = AiStatus.Unknown
+        }
+    }
 
     /** Checks availability, downloads the model if AICore offers one, and warms it up. */
     suspend fun warmUp() {
@@ -121,28 +141,40 @@ class AICoreManager @Inject constructor(
                 else -> throw SplitException.Unsupported(UNAVAILABLE_REASON)
             }
 
-            val model = clientLocked()
-            val useSystemInstruction = systemPromptSupportedLocked(model)
+            var model = clientLocked()
+            var useSystemInstruction = systemPromptSupportedLocked(model)
             var lastProblem = "Gemini Nano returned no usable JSON"
 
-            for (attempt in 0 until MAX_GENERATION_ATTEMPTS) {
+            var attempt = 0
+            while (attempt < MAX_GENERATION_ATTEMPTS) {
                 val output = try {
                     generate(model, input, strict = attempt > 0, useSystemInstruction)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    throw classify(e)
+                    val failure = classify(e)
+                    if (!demotePreviewLocked(e, failure)) throw failure
+                    // Same attempt again, on the next model in line (this also refreshes the status name).
+                    val nextReady = try {
+                        checkStatusLocked() == FeatureStatus.AVAILABLE
+                    } catch (c: CancellationException) {
+                        throw c
+                    } catch (statusError: Exception) {
+                        false
+                    }
+                    if (!nextReady) throw failure
+                    model = clientLocked()
+                    useSystemInstruction = systemPromptSupportedLocked(model)
+                    continue
                 }
+                attempt++
 
                 if (output.isNullOrBlank()) {
                     lastProblem = "Gemini Nano returned an empty answer"
                     continue
                 }
                 val parsed = parseBreakdown(output)
-                if (parsed != null) {
-                    _status.value = AiStatus.Ready
-                    return@withLock parsed
-                }
+                if (parsed != null) return@withLock parsed
                 lastProblem = "Gemini Nano's answer didn't match the task schema"
             }
             throw SplitException.MalformedOutput(lastProblem)
@@ -173,14 +205,45 @@ class AICoreManager @Inject constructor(
     }
 
     private suspend fun checkStatusLocked(): Int {
-        val featureStatus = clientLocked().checkStatus()
+        val model = clientLocked()
+        val featureStatus = model.checkStatus()
         when (featureStatus) {
-            FeatureStatus.AVAILABLE -> if (_status.value !is AiStatus.Ready) _status.value = AiStatus.Ready
+            FeatureStatus.AVAILABLE -> {
+                if (activeModelName == null) activeModelName = baseModelName(model)
+                _status.value = AiStatus.Ready(activeModelName)
+            }
             FeatureStatus.DOWNLOADABLE, FeatureStatus.DOWNLOADING ->
                 if (_status.value !is AiStatus.Downloading) _status.value = AiStatus.Downloading(0L, 0L)
-            else -> _status.value = AiStatus.Unavailable(UNAVAILABLE_REASON)
+            else -> {
+                _status.value = AiStatus.Unavailable(UNAVAILABLE_REASON)
+                // Re-run model selection next time; AICore may have updated or finished a download meanwhile.
+                dropClientLocked()
+            }
         }
         return featureStatus
+    }
+
+    private fun dropClientLocked() {
+        client?.close()
+        client = null
+        activeOption = null
+        activeModelName = null
+        systemPromptSupported = null
+        warmedUp = false
+    }
+
+    /**
+     * A preview model can report AVAILABLE and still fail every inference, so a hard
+     * inference error on one marks it broken and falls back to the next option. Returns
+     * whether the caller should retry on the newly selected model.
+     */
+    private fun demotePreviewLocked(e: Exception, failure: SplitException): Boolean {
+        val option = activeOption ?: return false
+        if (option.releaseStage != ModelReleaseStage.PREVIEW) return false
+        if (e !is GenAiException || failure !is SplitException.Transient) return false
+        brokenOptions += option
+        dropClientLocked()
+        return true
     }
 
     private suspend fun download() {
@@ -196,7 +259,7 @@ class AICoreManager @Inject constructor(
                     }
                     is DownloadStatus.DownloadProgress ->
                         _status.value = AiStatus.Downloading(progress.totalBytesDownloaded, totalBytes)
-                    is DownloadStatus.DownloadCompleted -> _status.value = AiStatus.Ready
+                    is DownloadStatus.DownloadCompleted -> _status.value = AiStatus.Ready()
                     is DownloadStatus.DownloadFailed -> _status.value = AiStatus.Unavailable(describe(progress.e))
                 }
             }
@@ -209,8 +272,77 @@ class AICoreManager @Inject constructor(
         }
     }
 
-    private fun clientLocked(): GenerativeModel =
-        client ?: Generation.getClient().also { client = it }
+    /**
+     * Picks the best model AICore can serve, following Google's guidance: preview builds
+     * first when opted in, then stable FULL, then stable FAST. A ready model wins over one
+     * that still needs downloading. The SDK doesn't throw at client creation, so
+     * checkStatus() is the availability probe.
+     */
+    private suspend fun clientLocked(): GenerativeModel {
+        client?.let { return it }
+
+        var downloadable: GenerativeModel? = null
+        var downloadableOption: ModelOption? = null
+        for (option in modelOptions().filterNot { it in brokenOptions }) {
+            val candidate = Generation.getClient(
+                generationConfig {
+                    modelConfig = modelConfig {
+                        releaseStage = option.releaseStage
+                        preference = option.preference
+                    }
+                }
+            )
+            val featureStatus = try {
+                candidate.checkStatus()
+            } catch (e: CancellationException) {
+                candidate.close()
+                downloadable?.close()
+                throw e
+            } catch (e: Exception) {
+                FeatureStatus.UNAVAILABLE
+            }
+
+            when {
+                featureStatus == FeatureStatus.AVAILABLE -> {
+                    downloadable?.close()
+                    client = candidate
+                    activeOption = option
+                    return candidate
+                }
+                downloadable == null && (featureStatus == FeatureStatus.DOWNLOADABLE ||
+                    featureStatus == FeatureStatus.DOWNLOADING) -> {
+                    downloadable = candidate
+                    downloadableOption = option
+                }
+                else -> candidate.close()
+            }
+        }
+
+        // Nothing ready: keep a downloadable model, or the default client so checkStatus() explains why.
+        val chosen = downloadable ?: Generation.getClient()
+        client = chosen
+        activeOption = downloadableOption
+        return chosen
+    }
+
+    private fun modelOptions(): List<ModelOption> = buildList {
+        if (settings.usePreviewModel.value) {
+            add(ModelOption(ModelReleaseStage.PREVIEW, ModelPreference.FULL))
+            add(ModelOption(ModelReleaseStage.PREVIEW, ModelPreference.FAST))
+        }
+        add(ModelOption(ModelReleaseStage.STABLE, ModelPreference.FULL))
+        add(ModelOption(ModelReleaseStage.STABLE, ModelPreference.FAST))
+    }
+
+    private suspend fun baseModelName(model: GenerativeModel): String? = try {
+        model.getBaseModelName()?.takeIf { it.isNotBlank() }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    private data class ModelOption(val releaseStage: Int, val preference: Int)
 
     private suspend fun systemPromptSupportedLocked(model: GenerativeModel): Boolean {
         systemPromptSupported?.let { return it }
@@ -319,7 +451,7 @@ class AICoreManager @Inject constructor(
         const val INPUT_CLOSE = ">>>"
 
         const val UNAVAILABLE_REASON =
-            "Gemini Nano isn't available. Check that AICore is up to date in the Play Store."
+            "Gemini Nano isn't available. Update AICore in the Play Store; it won't run on an unlocked bootloader."
 
         val LIST_MARKER = Regex("""^\s*(?:[-*•]+|\d+[.)])\s*""")
 

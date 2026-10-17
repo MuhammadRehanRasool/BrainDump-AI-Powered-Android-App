@@ -14,6 +14,7 @@ room = "2.7.2"
 coroutines = "1.10.2"
 serialization = "1.9.0"
 mlkitGenai = "1.0.0-beta4"
+mlkitGenaiSpeech = "1.0.0-alpha1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -46,6 +47,8 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 
 # ML Kit GenAI Prompt API: the system Gemini Nano served by AICore.
 mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenai" }
+# ML Kit GenAI Speech Recognition: Advanced mode runs on Gemini Nano (Pixel 10+), Basic elsewhere.
+mlkit-genai-speech = { group = "com.google.mlkit", name = "genai-speech-recognition", version.ref = "mlkitGenaiSpeech" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

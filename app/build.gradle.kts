@@ -133,4 +133,5 @@ dependencies {
     implementation(libs.androidx.hilt.navigation.compose)
 
     implementation(libs.mlkit.genai.prompt)
+    implementation(libs.mlkit.genai.speech)
 }

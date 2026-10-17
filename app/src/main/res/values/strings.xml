@@ -48,6 +48,8 @@
     <string name="ai_status_downloading">Downloading Gemini Nano…</string>
     <string name="ai_status_downloading_percent">Downloading Gemini Nano… %1$d%%</string>
     <string name="ai_status_ready">Gemini Nano ready · on-device</string>
+    <string name="ai_status_ready_model">Ready · %1$s</string>
+    <string name="dashboard_use_preview">Use preview Gemini Nano</string>
     <string name="ai_status_unavailable">AI offline · ideas are still saved</string>
 
     <string name="idea_splitting">Splitting on-device…</string>

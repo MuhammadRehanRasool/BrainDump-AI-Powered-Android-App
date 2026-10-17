@@ -29,4 +29,10 @@ interface IdeaRepository {
 
     /** Checks model availability, downloads it if needed and warms it up. */
     suspend fun warmUpAi()
+
+    /** Whether to try the AICore Developer Preview build of Gemini Nano first. */
+    val usePreviewModel: StateFlow<Boolean>
+
+    /** Saves the choice, re-selects the model and splits anything that was waiting. */
+    suspend fun setUsePreviewModel(enabled: Boolean)
 }

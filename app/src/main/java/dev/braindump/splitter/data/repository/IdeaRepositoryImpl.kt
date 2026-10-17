@@ -1,6 +1,7 @@
 package dev.braindump.splitter.data.repository
 
 import dev.braindump.splitter.data.ai.AICoreManager
+import dev.braindump.splitter.data.ai.AiSettings
 import dev.braindump.splitter.data.ai.SplitException
 import dev.braindump.splitter.data.local.IdeaDao
 import dev.braindump.splitter.data.local.IdeaEntity
@@ -22,6 +23,7 @@ import javax.inject.Singleton
 class IdeaRepositoryImpl @Inject constructor(
     private val dao: IdeaDao,
     private val ai: AICoreManager,
+    private val settings: AiSettings,
 ) : IdeaRepository {
 
     // One drain at a time; a caller that waits here sees everything queued before it.
@@ -63,6 +65,16 @@ class IdeaRepositoryImpl @Inject constructor(
 
     override suspend fun warmUpAi() {
         ai.warmUp()
+    }
+
+    override val usePreviewModel: StateFlow<Boolean> get() = settings.usePreviewModel
+
+    override suspend fun setUsePreviewModel(enabled: Boolean) {
+        if (settings.usePreviewModel.value == enabled) return
+        settings.setUsePreviewModel(enabled)
+        ai.resetModel()
+        ai.warmUp()
+        splitPending()
     }
 
     override suspend fun splitPending() {

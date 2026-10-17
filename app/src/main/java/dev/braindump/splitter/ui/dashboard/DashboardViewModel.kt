@@ -29,6 +29,7 @@ data class DaySection(
 data class DashboardUiState(
     val sections: List<DaySection> = emptyList(),
     val aiStatus: AiStatus = AiStatus.Unknown,
+    val usePreviewModel: Boolean = false,
     val isLoading: Boolean = true,
 )
 
@@ -41,9 +42,19 @@ class DashboardViewModel @Inject constructor(
     val uiState: StateFlow<DashboardUiState> = combine(
         repository.observeIdeas().map(::groupByDay).flowOn(Dispatchers.Default),
         repository.aiStatus,
-    ) { sections, aiStatus ->
-        DashboardUiState(sections = sections, aiStatus = aiStatus, isLoading = false)
+        repository.usePreviewModel,
+    ) { sections, aiStatus, usePreviewModel ->
+        DashboardUiState(
+            sections = sections,
+            aiStatus = aiStatus,
+            usePreviewModel = usePreviewModel,
+            isLoading = false,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardUiState())
+
+    fun setUsePreviewModel(enabled: Boolean) {
+        appScope.launch { repository.setUsePreviewModel(enabled) }
+    }
 
     /** Gemini Nano only serves foreground apps, so this is where the queue gets drained. */
     fun onForeground() {
