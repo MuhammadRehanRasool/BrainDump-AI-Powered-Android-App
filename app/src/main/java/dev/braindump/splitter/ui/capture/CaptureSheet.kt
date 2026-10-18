@@ -128,8 +128,14 @@ fun CaptureSheet(
             else -> micPermission.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
+    // While dictating, the live words follow what's already committed.
+    val shownText: () -> String = {
+        val partial = transcriber.partialText
+        if (transcriber.isListening && partial.isNotEmpty()) "${text.trimEnd()} $partial".trimStart() else text
+    }
     val submit: () -> Unit = {
-        val idea = text.trim()
+        // Splitting mid-dictation keeps the phrase still being spoken.
+        val idea = shownText().trim()
         if (idea.isNotEmpty()) {
             if (transcriber.isListening) transcriber.release()
             onSubmit(idea)
@@ -152,6 +158,8 @@ fun CaptureSheet(
         sheetState = sheetState,
         shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
         containerColor = glass.fillStrong,
+        // Translucent containers have no matching "on" color, so name it explicitly.
+        contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         // Over another app, the window blur already sets the sheet apart.
         scrimColor = Color.Black.copy(alpha = if (overApps) 0.12f else 0.32f),
@@ -174,10 +182,9 @@ fun CaptureSheet(
             }
 
             val listening = transcriber.isListening
-            val partial = transcriber.partialText
+            val shown = shownText()
             OutlinedTextField(
-                // While dictating, show the live words after what's already committed.
-                value = if (listening && partial.isNotEmpty()) "${text.trimEnd()} $partial".trimStart() else text,
+                value = shown,
                 onValueChange = { text = it },
                 readOnly = listening || splitting,
                 placeholder = {
@@ -220,7 +227,7 @@ fun CaptureSheet(
                             )
                         }
                         Spacer(Modifier.weight(1f))
-                        AccentButton(onClick = submit, enabled = text.isNotBlank() && !listening) {
+                        AccentButton(onClick = submit, enabled = shown.isNotBlank()) {
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
                             Text(stringResource(R.string.capture_submit), style = MaterialTheme.typography.labelLarge)

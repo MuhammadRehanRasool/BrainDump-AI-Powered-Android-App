@@ -3,6 +3,7 @@ package dev.braindump.splitter.ui.theme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
@@ -66,8 +67,11 @@ fun BrainDumpTheme(
             colorScheme = colorScheme,
             typography = AppTypography,
             shapes = AppShapes,
-            content = content,
-        )
+        ) {
+            // Nothing here sits on an opaque Surface, which is what normally sets the text color,
+            // so without this anything off the glass panels falls back to black.
+            CompositionLocalProvider(LocalContentColor provides colorScheme.onSurface, content = content)
+        }
     }
 }
 

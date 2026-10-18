@@ -131,6 +131,8 @@ fun DashboardScreen(
         GlassBackdrop()
         Scaffold(
             containerColor = Color.Transparent,
+            // A transparent container has no matching "on" color, so name it explicitly.
+            contentColor = MaterialTheme.colorScheme.onSurface,
             topBar = {
                 TopBar(
                     aiStatus = state.aiStatus,

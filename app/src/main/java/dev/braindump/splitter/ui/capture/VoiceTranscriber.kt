@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognitionSupport
 import android.speech.RecognitionSupportCallback
@@ -63,7 +64,7 @@ class VoiceTranscriber(
     var isListening by mutableStateOf(false)
         private set
 
-    /** Words recognized so far in the current dictation. */
+    /** Words of the phrase being spoken right now; finished phrases go to onFinal as they land. */
     var partialText by mutableStateOf("")
         private set
 
@@ -81,13 +82,20 @@ class VoiceTranscriber(
     /** Picks the language and engine, and runs the GenAI stream. */
     private var session: Job? = null
 
+    // Dictation keeps going across pauses (both engines end a session after each phrase) until
+    // the user taps stop, a long silence passes, or the session cap is hit.
+    private var stopRequested = false
+    private var lastSpeechAt = 0L
+    private var watchdog: Job? = null
+    private var restartJob: Job? = null
+    private var restartRetries = 0
+
     // ML Kit GenAI path.
     private var genAiRecognizer: GenAiSpeechRecognizer? = null
     private var genAiLocale: Locale? = null
     private var genAiUnusable = false
     private var genAiDownloading = false
     private var genAiListening = false
-    private var silenceTimer: Job? = null
 
     // Platform fallback.
     private var recognizer: SpeechRecognizer? = null
@@ -101,6 +109,8 @@ class VoiceTranscriber(
 
     /** Stops listening; whatever was heard is still delivered through onFinal. */
     fun stop() {
+        if (!isListening) return
+        stopRequested = true
         val genAi = genAiRecognizer
         when {
             genAiListening && genAi != null -> scope.launch { stopGenAi(genAi) }
@@ -109,12 +119,18 @@ class VoiceTranscriber(
                 session?.cancel()
                 resetState()
             }
+            restartJob?.isActive == true -> {
+                // Between two platform phrases: everything heard is already delivered.
+                restartJob?.cancel()
+                resetState()
+            }
             else -> recognizer?.stopListening()
         }
     }
 
     fun release() {
-        silenceTimer?.cancel()
+        stopRequested = true
+        restartJob?.cancel()
         session?.cancel()
         session = null
         genAiListening = false
@@ -130,6 +146,9 @@ class VoiceTranscriber(
         partialText = ""
         level = 0f
         isListening = true
+        stopRequested = false
+        restartRetries = 0
+        startWatchdog()
         session = scope.launch {
             val target = recognitionLocale()
             val genAi = if (genAiUnusable) null else readyGenAiRecognizer(target)
@@ -138,9 +157,31 @@ class VoiceTranscriber(
     }
 
     private fun resetState() {
+        watchdog?.cancel()
         isListening = false
         partialText = ""
         level = 0f
+    }
+
+    /** Ends dictation after a long silence or at the session cap, so a forgotten mic doesn't stay open. */
+    private fun startWatchdog() {
+        watchdog?.cancel()
+        val startedAt = SystemClock.elapsedRealtime()
+        lastSpeechAt = startedAt
+        watchdog = scope.launch {
+            while (true) {
+                delay(WATCHDOG_TICK_MS)
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastSpeechAt > IDLE_STOP_MS || now - startedAt > MAX_SESSION_MS) {
+                    stop()
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun heardSpeech() {
+        lastSpeechAt = SystemClock.elapsedRealtime()
     }
 
     private suspend fun recognitionLocale(): Locale {
@@ -239,54 +280,59 @@ class VoiceTranscriber(
         }
     }
 
+    /**
+     * Runs recognition streams back to back until the user stops. A stream can end on its own
+     * after a phrase, and that must not end the dictation.
+     */
     private suspend fun listenWithGenAi(genAi: GenAiSpeechRecognizer, target: Locale) {
-        val committed = StringBuilder()
+        var heardAnything = false
         var failed = false
+        var emptyStreams = 0
         genAiListening = true
-        val sessionCap = scope.launch {
-            delay(MAX_SESSION_MS)
-            stopGenAi(genAi)
-        }
         try {
-            genAi.startRecognition(speechRecognizerRequest { audioSource = AudioSource.fromMic() })
-                .collect { response ->
-                    when (response) {
-                        is SpeechRecognizerResponse.PartialTextResponse -> {
-                            silenceTimer?.cancel()
-                            partialText = join(committed, response.text)
-                            level = PEAK_LEVEL
-                        }
-                        is SpeechRecognizerResponse.FinalTextResponse -> {
-                            val segment = response.text.trim()
-                            if (segment.isNotEmpty()) {
-                                if (committed.isNotEmpty()) committed.append(' ')
-                                committed.append(segment)
+            while (!stopRequested) {
+                var responses = 0
+                try {
+                    genAi.startRecognition(speechRecognizerRequest { audioSource = AudioSource.fromMic() })
+                        .collect { response ->
+                            responses++
+                            when (response) {
+                                is SpeechRecognizerResponse.PartialTextResponse -> {
+                                    partialText = response.text.trim()
+                                    level = PEAK_LEVEL
+                                    heardSpeech()
+                                }
+                                is SpeechRecognizerResponse.FinalTextResponse -> {
+                                    val segment = response.text.trim()
+                                    partialText = ""
+                                    level = 0f
+                                    if (segment.isNotEmpty()) {
+                                        heardAnything = true
+                                        heardSpeech()
+                                        onFinal(segment)
+                                    }
+                                }
+                                is SpeechRecognizerResponse.ErrorResponse -> failed = true
+                                else -> Unit // CompletedResponse: the flow ends right after.
                             }
-                            partialText = committed.toString()
-                            level = 0f
-                            // A pause after a finished phrase ends the dictation, like the platform recognizer.
-                            silenceTimer?.cancel()
-                            silenceTimer = scope.launch {
-                                delay(SILENCE_MS)
-                                stopGenAi(genAi)
-                            }
                         }
-                        is SpeechRecognizerResponse.ErrorResponse -> failed = true
-                        else -> Unit // CompletedResponse: the flow ends right after.
-                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    failed = true
                 }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            failed = true
+                if (failed) break
+                // A stream that closes without saying anything, over and over, isn't going to recover.
+                emptyStreams = if (responses == 0) emptyStreams + 1 else 0
+                if (emptyStreams >= MAX_EMPTY_STREAMS) break
+                if (!stopRequested) delay(RESTART_DELAY_MS)
+            }
         } finally {
             genAiListening = false
-            sessionCap.cancel()
-            silenceTimer?.cancel()
         }
 
-        val heard = committed.toString().trim().ifEmpty { partialText.trim() }
-        if (failed && heard.isEmpty()) {
+        val leftover = partialText.trim()
+        if (failed && !heardAnything && leftover.isEmpty() && !stopRequested) {
             // Don't keep failing on this path; the platform recognizer takes over from here.
             genAiUnusable = true
             genAiRecognizer?.close()
@@ -297,7 +343,7 @@ class VoiceTranscriber(
             return
         }
         resetState()
-        if (heard.isNotEmpty()) onFinal(heard)
+        if (leftover.isNotEmpty()) onFinal(leftover)
     }
 
     private suspend fun stopGenAi(genAi: GenAiSpeechRecognizer) {
@@ -311,9 +357,6 @@ class VoiceTranscriber(
             resetState()
         }
     }
-
-    private fun join(committed: CharSequence, partial: String): String =
-        if (committed.isEmpty()) partial.trim() else "$committed ${partial.trim()}".trimEnd()
 
     private fun startPlatform(target: Locale) {
         val activeRecognizer = recognizer ?: createRecognizer()?.also { recognizer = it }
@@ -350,10 +393,37 @@ class VoiceTranscriber(
         onMessage(context.getString(id, *args))
     }
 
+    /**
+     * The platform recognizer ends after every phrase. Unless the user stopped, start the next
+     * one right away so dictation feels continuous.
+     */
+    private fun continuePlatform() {
+        partialText = ""
+        level = 0f
+        if (stopRequested) {
+            resetState()
+            return
+        }
+        restartJob = scope.launch {
+            // Restarting from inside the result callback trips ERROR_CLIENT on some devices.
+            delay(RESTART_DELAY_MS)
+            val active = recognizer
+            if (stopRequested || active == null) {
+                resetState()
+                return@launch
+            }
+            active.startListening(recognitionIntent(speechLocale ?: plainLocale(Locale.getDefault())))
+        }
+    }
+
     override fun onResults(results: Bundle?) {
         val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()
-        resetState()
-        if (!text.isNullOrEmpty()) onFinal(text)
+        if (!text.isNullOrEmpty()) {
+            heardSpeech()
+            restartRetries = 0
+            onFinal(text)
+        }
+        continuePlatform()
     }
 
     override fun onPartialResults(partialResults: Bundle?) {
@@ -361,16 +431,33 @@ class VoiceTranscriber(
             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             ?.firstOrNull()
             .orEmpty()
+        if (partialText.isNotBlank()) heardSpeech()
     }
 
     override fun onError(error: Int) {
         val heard = partialText.trim()
-        resetState()
 
         when (error) {
-            // Silence or nothing intelligible: keep any words already heard and stop quietly.
+            // A pause, or a hiccup while restarting between phrases: keep any words heard and listen on.
             SpeechRecognizer.ERROR_NO_MATCH,
-            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> if (heard.isNotEmpty()) onFinal(heard)
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+                if (heard.isNotEmpty()) onFinal(heard)
+                continuePlatform()
+                return
+            }
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
+            SpeechRecognizer.ERROR_CLIENT -> if (isListening && !stopRequested && restartRetries < MAX_RESTART_RETRIES) {
+                restartRetries++
+                if (heard.isNotEmpty()) onFinal(heard)
+                continuePlatform()
+                return
+            }
+        }
+
+        resetState()
+        when (error) {
+            SpeechRecognizer.ERROR_NO_MATCH,
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> Unit // handled above
 
             SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
             SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> {
@@ -418,9 +505,13 @@ class VoiceTranscriber(
     override fun onEvent(eventType: Int, params: Bundle?) = Unit
 
     private companion object {
-        /** Pause after a finished phrase that ends the dictation. */
-        const val SILENCE_MS = 2_500L
-        const val MAX_SESSION_MS = 90_000L
+        /** Silence that ends the dictation on its own; short pauses between phrases don't. */
+        const val IDLE_STOP_MS = 20_000L
+        const val MAX_SESSION_MS = 5 * 60_000L
+        const val WATCHDOG_TICK_MS = 1_000L
+        const val RESTART_DELAY_MS = 150L
+        const val MAX_RESTART_RETRIES = 3
+        const val MAX_EMPTY_STREAMS = 3
         const val PROBE_TIMEOUT_MS = 1_500L
 
         /** The GenAI stream has no input level, so the indicator pulses while words arrive. */
