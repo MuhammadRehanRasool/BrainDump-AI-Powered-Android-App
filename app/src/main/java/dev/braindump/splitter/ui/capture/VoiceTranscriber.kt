@@ -167,7 +167,7 @@ class VoiceTranscriber(
                 suspendCancellableCoroutine<List<String>> { continuation ->
                     val callback = object : RecognitionSupportCallback {
                         override fun onSupportResult(support: RecognitionSupport) {
-                            if (continuation.isActive) continuation.resume(installedLanguages(support))
+                            if (continuation.isActive) continuation.resume(support.installedOnDeviceLanguages)
                         }
 
                         override fun onError(error: Int) {
@@ -185,15 +185,6 @@ class VoiceTranscriber(
             probe.destroy()
         }
     }
-
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    private fun installedLanguages(support: RecognitionSupport): List<String> =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            support.installedOnDeviceLanguages
-        } else {
-            @Suppress("DEPRECATION")
-            support.installedLanguages
-        }
 
     /** The GenAI recognizer when its model is on the device; otherwise null, kicking off a download if offered. */
     private suspend fun readyGenAiRecognizer(target: Locale): GenAiSpeechRecognizer? {
