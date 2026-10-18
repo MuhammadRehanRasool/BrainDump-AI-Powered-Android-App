@@ -7,15 +7,18 @@ import dev.braindump.splitter.di.ApplicationScope
 import dev.braindump.splitter.domain.model.AiStatus
 import dev.braindump.splitter.domain.model.Idea
 import dev.braindump.splitter.domain.model.IdeaCategory
+import dev.braindump.splitter.domain.model.RefineOutcome
 import dev.braindump.splitter.domain.repository.IdeaRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -31,7 +34,16 @@ data class DashboardUiState(
     val sections: List<DaySection> = emptyList(),
     val aiStatus: AiStatus = AiStatus.Unknown,
     val usePreviewModel: Boolean = false,
+    val refine: RefineState = RefineState(),
     val isLoading: Boolean = true,
+)
+
+/** The refine chat's request in flight, or the last one that failed (so it can be retried). */
+data class RefineState(
+    val ideaId: Long? = null,
+    val pendingAsk: String? = null,
+    val failedAsk: String? = null,
+    val error: String? = null,
 )
 
 @HiltViewModel
@@ -40,18 +52,41 @@ class DashboardViewModel @Inject constructor(
     @ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
 
+    private val refining = MutableStateFlow(RefineState())
+
     val uiState: StateFlow<DashboardUiState> = combine(
         repository.observeIdeas().map(::groupByDay).flowOn(Dispatchers.Default),
         repository.aiStatus,
         repository.usePreviewModel,
-    ) { sections, aiStatus, usePreviewModel ->
+        refining,
+    ) { sections, aiStatus, usePreviewModel, refineState ->
         DashboardUiState(
             sections = sections,
             aiStatus = aiStatus,
             usePreviewModel = usePreviewModel,
+            refine = refineState,
             isLoading = false,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardUiState())
+
+    /**
+     * Runs in the app scope so a dismissed sheet still gets its answer saved; the card
+     * updates in place through the ideas flow.
+     */
+    fun refine(ideaId: Long, ask: String) {
+        if (refining.value.pendingAsk != null || ask.isBlank()) return
+        refining.value = RefineState(ideaId = ideaId, pendingAsk = ask)
+        appScope.launch {
+            refining.value = when (val outcome = repository.refine(ideaId, ask)) {
+                is RefineOutcome.Updated -> RefineState()
+                is RefineOutcome.Failed -> RefineState(ideaId = ideaId, failedAsk = ask, error = outcome.reason)
+            }
+        }
+    }
+
+    fun clearRefineError() {
+        refining.update { if (it.pendingAsk == null) RefineState() else it }
+    }
 
     fun setUsePreviewModel(enabled: Boolean) {
         appScope.launch { repository.setUsePreviewModel(enabled) }

@@ -8,6 +8,9 @@ import dev.braindump.splitter.domain.model.Idea
 import dev.braindump.splitter.domain.model.IdeaCategory
 import dev.braindump.splitter.domain.model.IdeaStatus
 import dev.braindump.splitter.domain.model.MicroTask
+import dev.braindump.splitter.domain.model.RefineTurn
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 
 @Entity(
     tableName = "ideas",
@@ -42,7 +45,18 @@ data class IdeaEntity(
     val createdAt: Long,
     @ColumnInfo(name = "updated_at")
     val updatedAt: Long,
+    /** The refine chat as a JSON list of [RefineTurn]; null until the idea is first refined. */
+    @ColumnInfo(name = "refinements")
+    val refinements: String? = null,
 )
+
+fun IdeaEntity.refineTurns(): List<RefineTurn> =
+    refinements?.let { runCatching { Json.decodeFromString(refineTurnList, it) }.getOrNull() }.orEmpty()
+
+fun IdeaEntity.withTurn(turn: RefineTurn): IdeaEntity =
+    copy(refinements = Json.encodeToString(refineTurnList, refineTurns() + turn))
+
+private val refineTurnList = ListSerializer(RefineTurn.serializer())
 
 fun IdeaEntity.toDomain(): Idea = Idea(
     id = id,
@@ -57,4 +71,5 @@ fun IdeaEntity.toDomain(): Idea = Idea(
     status = status,
     error = lastError,
     createdAt = createdAt,
+    refinements = refineTurns(),
 )

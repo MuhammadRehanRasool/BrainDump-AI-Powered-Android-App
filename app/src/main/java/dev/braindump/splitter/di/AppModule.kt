@@ -32,7 +32,7 @@ object AppModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): BrainDumpDatabase =
         Room.databaseBuilder(context, BrainDumpDatabase::class.java, BrainDumpDatabase.NAME)
-            .addMigrations(BrainDumpDatabase.MIGRATION_1_2)
+            .addMigrations(BrainDumpDatabase.MIGRATION_1_2, BrainDumpDatabase.MIGRATION_2_3)
             .build()
 
     @Provides

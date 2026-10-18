@@ -132,7 +132,52 @@ class AICoreManager @Inject constructor(
         val input = sanitize(rawIdea)
         if (input.isEmpty()) throw SplitException.EmptyInput()
 
-        return mutex.withLock {
+        return infer(
+            Prompt(
+                instruction = SYSTEM_PROMPT,
+                strictSuffix = STRICT_SUFFIX,
+                userTurn = "Input: $INPUT_OPEN$input$INPUT_CLOSE\nOutput:",
+                parse = { parseBreakdown(it) },
+                salvage = { answers -> salvageBreakdown(answers, input) },
+            )
+        )
+    }
+
+    /**
+     * Applies [ask] ("make the tasks smaller", "add a step for X") to an idea that was already
+     * split, and returns the whole idea rewritten. Fields the model leaves out keep their
+     * current value, so a weak build that only echoes the title still can't wipe the tasks.
+     */
+    suspend fun refineIdea(current: IdeaBreakdown, originalDump: String, ask: String): IdeaBreakdown {
+        val request = sanitize(ask).take(MAX_ASK_CHARS)
+        if (request.isEmpty()) throw SplitException.EmptyInput()
+        val idea = toJson(current)
+        val dump = sanitize(originalDump).take(MAX_REFINE_DUMP_CHARS)
+
+        return infer(
+            Prompt(
+                instruction = REFINE_PROMPT,
+                strictSuffix = REFINE_STRICT_SUFFIX,
+                userTurn = "Idea: $INPUT_OPEN$idea$INPUT_CLOSE\n" +
+                    "Original dump: $INPUT_OPEN$dump$INPUT_CLOSE\n" +
+                    "Request: $INPUT_OPEN$request$INPUT_CLOSE\nOutput:",
+                parse = { parseBreakdown(it, base = current) },
+                salvage = { null },
+            )
+        )
+    }
+
+    /** One kind of request: its rules, the user turn, and how to read and rescue the answer. */
+    private class Prompt(
+        val instruction: String,
+        val strictSuffix: String,
+        val userTurn: String,
+        val parse: (String) -> IdeaBreakdown?,
+        val salvage: (List<String>) -> IdeaBreakdown?,
+    )
+
+    private suspend fun infer(prompt: Prompt): IdeaBreakdown =
+        mutex.withLock {
             val featureStatus = try {
                 checkStatusLocked()
             } catch (e: CancellationException) {
@@ -156,7 +201,7 @@ class AICoreManager @Inject constructor(
             while (attempt < MAX_GENERATION_ATTEMPTS) {
                 val output = try {
                     // The retry puts the rules in the user turn; some Nano builds follow them better there.
-                    generate(model, input, strict = attempt > 0, useSystemInstruction && attempt == 0)
+                    generate(model, prompt, strict = attempt > 0, useSystemInstruction && attempt == 0)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -182,23 +227,22 @@ class AICoreManager @Inject constructor(
                     continue
                 }
                 answers += output
-                val parsed = parseBreakdown(output)
+                val parsed = prompt.parse(output)
                 if (parsed != null) return@withLock parsed
                 lastProblem = "Gemini Nano's answer didn't match the task schema"
             }
 
             // This build can't follow the schema for this dump; another installed build often can.
-            splitWithOtherModelsLocked(input, answers)
-                ?: salvageBreakdown(answers, input)
+            splitWithOtherModelsLocked(prompt, answers)
+                ?: prompt.salvage(answers)
                 ?: throw SplitException.MalformedOutput(lastProblem)
         }
-    }
 
     /**
      * Tries every other build AICore can serve right now. One that returns valid JSON becomes
      * the active model for the rest of the session, so later splits go straight to it.
      */
-    private suspend fun splitWithOtherModelsLocked(input: String, answers: MutableList<String>): IdeaBreakdown? {
+    private suspend fun splitWithOtherModelsLocked(prompt: Prompt, answers: MutableList<String>): IdeaBreakdown? {
         val current = activeOption
         for (option in fallbackOptions()) {
             if (option == current || option in brokenOptions) continue
@@ -214,10 +258,10 @@ class AICoreManager @Inject constructor(
                     false
                 }
                 for (attempt in 0 until MAX_GENERATION_ATTEMPTS) {
-                    val output = generate(candidate, input, strict = attempt > 0, useSystemInstruction && attempt == 0)
+                    val output = generate(candidate, prompt, strict = attempt > 0, useSystemInstruction && attempt == 0)
                     if (output.isNullOrBlank()) continue
                     answers += output
-                    val parsed = parseBreakdown(output) ?: continue
+                    val parsed = prompt.parse(output) ?: continue
                     promoteLocked(option, candidate, useSystemInstruction)
                     promoted = true
                     return parsed
@@ -244,12 +288,12 @@ class AICoreManager @Inject constructor(
 
     private suspend fun generate(
         model: GenerativeModel,
-        input: String,
+        prompt: Prompt,
         strict: Boolean,
         useSystemInstruction: Boolean,
     ): String? {
-        val instruction = if (strict) SYSTEM_PROMPT + STRICT_SUFFIX else SYSTEM_PROMPT
-        val userTurn = "Input: $INPUT_OPEN$input$INPUT_CLOSE\nOutput:"
+        val instruction = if (strict) prompt.instruction + prompt.strictSuffix else prompt.instruction
+        val userTurn = prompt.userTurn
         val request = if (useSystemInstruction) {
             generateContentRequest(SystemInstruction(instruction), TextPart(userTurn)) { tune() }
         } else {
@@ -449,14 +493,26 @@ class AICoreManager @Inject constructor(
     private fun describe(e: Throwable): String =
         e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
 
-    internal fun parseBreakdown(modelOutput: String): IdeaBreakdown? {
+    /** With a [base] (refining), missing fields keep its values and 1 to [MAX_REFINED_TASKS] tasks are fine. */
+    internal fun parseBreakdown(modelOutput: String, base: IdeaBreakdown? = null): IdeaBreakdown? {
         val start = modelOutput.indexOf('{')
         if (start < 0) return null
         return jsonCandidates(modelOutput, start)
             .mapNotNull(::decodeObject)
-            .mapNotNull(::toBreakdown)
+            .mapNotNull { toBreakdown(it, base) }
             .firstOrNull()
     }
+
+    /** The idea in the same snake_case shape the model writes, so it can edit it in place. */
+    private fun toJson(idea: IdeaBreakdown): String = JsonObject(
+        mapOf(
+            "idea_title" to JsonPrimitive(sanitize(idea.ideaTitle)),
+            "category" to JsonPrimitive(idea.category.name.lowercase().replaceFirstChar { it.titlecase() }),
+            "raw_concept" to JsonPrimitive(sanitize(idea.rawConcept)),
+            "tech_stack_anchors" to JsonArray(idea.techStackAnchors.map { JsonPrimitive(sanitize(it)) }),
+            "immediate_micro_tasks" to JsonArray(idea.immediateMicroTasks.map { JsonPrimitive(sanitize(it)) }),
+        )
+    ).toString()
 
     /** The answer as written, then repaired copies in case it was cut off at the token limit. */
     private fun jsonCandidates(output: String, start: Int): Sequence<String> = sequence {
@@ -510,36 +566,53 @@ class AICoreManager @Inject constructor(
         null
     }
 
-    private fun toBreakdown(answer: JsonObject): IdeaBreakdown? {
+    private fun toBreakdown(answer: JsonObject, base: IdeaBreakdown?): IdeaBreakdown? {
         // Smaller builds drift on key names and shapes, so keys match loosely and lists may arrive as one string.
         val fields = answer.entries.associate { (key, value) -> key.lowercase().filter(Char::isLetterOrDigit) to value }
         fun field(names: List<String>, hint: String): JsonElement? =
             names.firstNotNullOfOrNull { fields[it] } ?: fields.entries.firstOrNull { hint in it.key }?.value
 
         val title = cleanLine(field(TITLE_KEYS, "title")?.let(::text).orEmpty()).take(MAX_TITLE_CHARS)
+            .ifEmpty { base?.ideaTitle.orEmpty() }
         if (title.isEmpty()) return null
 
-        val tasks = field(TASK_KEYS, "task")?.let { items(it, TASK_SEPARATORS) }.orEmpty().asSequence()
-            .map(::cleanLine)
-            .filter { it.isNotEmpty() }
-            .distinctBy { it.lowercase() }
-            .take(REQUIRED_TASKS)
-            .toList()
-        if (tasks.size != REQUIRED_TASKS) return null
+        val taskField = field(TASK_KEYS, "task")
+        val tasks = if (taskField == null && base != null) {
+            base.immediateMicroTasks
+        } else {
+            val maxTasks = if (base == null) REQUIRED_TASKS else MAX_REFINED_TASKS
+            val cleaned = taskField?.let { items(it, TASK_SEPARATORS) }.orEmpty().asSequence()
+                .map(::cleanLine)
+                .filter { it.isNotEmpty() }
+                .distinctBy { it.lowercase() }
+                .take(maxTasks)
+                .toList()
+            val valid = if (base == null) cleaned.size == REQUIRED_TASKS else cleaned.isNotEmpty()
+            if (!valid) return null
+            cleaned
+        }
 
-        val anchors = field(ANCHOR_KEYS, "stack")?.let { items(it, ANCHOR_SEPARATORS) }.orEmpty().asSequence()
-            .map(::cleanLine)
-            .filter { it.isNotEmpty() && it.length <= MAX_ANCHOR_CHARS }
-            .distinctBy { it.lowercase() }
-            .take(MAX_ANCHORS)
-            .toList()
+        val anchorField = field(ANCHOR_KEYS, "stack")
+        val anchors = if (anchorField == null && base != null) {
+            base.techStackAnchors
+        } else {
+            anchorField?.let { items(it, ANCHOR_SEPARATORS) }.orEmpty().asSequence()
+                .map(::cleanLine)
+                .filter { it.isNotEmpty() && it.length <= MAX_ANCHOR_CHARS }
+                .distinctBy { it.lowercase() }
+                .take(MAX_ANCHORS)
+                .toList()
+        }
+
+        val concept = field(CONCEPT_KEYS, "concept")?.let(::text)?.trim()
+        val category = field(CATEGORY_KEYS, "categor")?.let(::text)?.takeIf { it.isNotBlank() }
 
         return IdeaBreakdown(
             ideaTitle = title,
-            rawConcept = field(CONCEPT_KEYS, "concept")?.let(::text).orEmpty().trim(),
+            rawConcept = concept ?: base?.rawConcept.orEmpty(),
             techStackAnchors = anchors,
             immediateMicroTasks = tasks,
-            category = IdeaCategory.parse(field(CATEGORY_KEYS, "categor")?.let(::text)),
+            category = if (category == null && base != null) base.category else IdeaCategory.parse(category),
         )
     }
 
@@ -600,6 +673,9 @@ class AICoreManager @Inject constructor(
         // Leaves comfortable room for the instruction inside Gemini Nano's input window.
         const val MAX_INPUT_CHARS = 4_000
         const val REQUIRED_TASKS = 3
+        const val MAX_REFINED_TASKS = 5
+        const val MAX_ASK_CHARS = 600
+        const val MAX_REFINE_DUMP_CHARS = 600
         const val MAX_ANCHORS = 5
         const val MAX_ANCHOR_CHARS = 40
         const val MAX_TITLE_CHARS = 80
@@ -649,5 +725,25 @@ class AICoreManager @Inject constructor(
 
         const val STRICT_SUFFIX =
             "\nYour previous answer was invalid. Keep every string short and return exactly 3 micro tasks."
+
+        val REFINE_PROMPT = """
+            You are BrainDump, a practical coach. The user already has an idea, given as JSON between <<< and >>> after "Idea:". Change it as their Request asks.
+            Rules:
+            - Output ONLY the whole updated idea as ONE JSON object with the same keys. No markdown, no code fences, no commentary.
+            - Keep every field the request doesn't touch exactly as it is.
+            - Every value is a plain string or a list of plain strings. Keep it short; stop right after the closing brace.
+            - idea_title: at most 8 words, Title Case.
+            - category: exactly one of Personal, Work, Health, Learning, Money, Creative, Tech, Other.
+            - raw_concept: 1 or 2 plain sentences.
+            - tech_stack_anchors: 0 to 5 short tags.
+            - immediate_micro_tasks: 1 to 5 strings, each a concrete action under 15 words that starts with a verb. Add, remove, split or reword tasks only when asked; otherwise keep them.
+            - Stay in the same domain as the idea. The original dump is only background.
+            Example idea: <<<{"idea_title":"Reclaim My Evenings","category":"Personal","raw_concept":"Evenings disappear into phone scrolling.","tech_stack_anchors":["Time Blocking"],"immediate_micro_tasks":["Block 7 to 8 pm for the gym","Set a 30 minute limit on social apps","Put a book on the pillow"]}>>>
+            Example request: <<<add a step to buy running shoes and make the title shorter>>>
+            Example output: {"idea_title":"Better Evenings","category":"Personal","raw_concept":"Evenings disappear into phone scrolling.","tech_stack_anchors":["Time Blocking"],"immediate_micro_tasks":["Block 7 to 8 pm for the gym","Set a 30 minute limit on social apps","Put a book on the pillow","Buy running shoes this weekend"]}
+        """.trimIndent()
+
+        const val REFINE_STRICT_SUFFIX =
+            "\nYour previous answer was invalid. Output the whole idea as one JSON object with the same keys and short strings."
     }
 }

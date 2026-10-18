@@ -10,3 +10,11 @@ sealed interface CaptureOutcome {
 
     data object Empty : CaptureOutcome
 }
+
+sealed interface RefineOutcome {
+    /** The idea was rewritten; [summary] says what changed. */
+    data class Updated(val summary: String) : RefineOutcome
+
+    /** Gemini Nano couldn't apply the request; the idea is untouched. */
+    data class Failed(val reason: String) : RefineOutcome
+}

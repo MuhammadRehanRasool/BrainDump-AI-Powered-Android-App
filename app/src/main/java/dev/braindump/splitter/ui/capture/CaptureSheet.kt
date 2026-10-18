@@ -58,6 +58,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -99,7 +100,6 @@ fun CaptureSheet(
     close: Boolean = false,
     overApps: Boolean = false,
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val focusRequester = remember { FocusRequester() }
@@ -108,31 +108,10 @@ fun CaptureSheet(
     var text by rememberSaveable { mutableStateOf("") }
     var voiceAutoStarted by rememberSaveable { mutableStateOf(false) }
 
-    val showMessage: (String) -> Unit = { message ->
-        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    val toggleVoice = rememberVoiceToggle(transcriber) { spoken ->
+        text = if (text.isBlank()) spoken else "${text.trimEnd()} $spoken"
     }
-    val startListening: () -> Unit = {
-        transcriber.start(
-            onFinal = { spoken -> text = if (text.isBlank()) spoken else "${text.trimEnd()} $spoken" },
-            onMessage = showMessage,
-        )
-    }
-    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startListening() else showMessage(context.getString(R.string.voice_permission_denied))
-    }
-    val toggleVoice: () -> Unit = {
-        when {
-            transcriber.isListening -> transcriber.stop()
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED -> startListening()
-            else -> micPermission.launch(Manifest.permission.RECORD_AUDIO)
-        }
-    }
-    // While dictating, the live words follow what's already committed.
-    val shownText: () -> String = {
-        val partial = transcriber.partialText
-        if (transcriber.isListening && partial.isNotEmpty()) "${text.trimEnd()} $partial".trimStart() else text
-    }
+    val shownText: () -> String = { withLiveWords(text, transcriber) }
     val submit: () -> Unit = {
         // Splitting mid-dictation keeps the phrase still being spoken.
         val idea = shownText().trim()
@@ -249,8 +228,41 @@ fun CaptureSheet(
     }
 }
 
+/**
+ * The mic tap: stops dictation, or starts it after asking for the microphone if needed. Each
+ * finished phrase goes to [onFinal].
+ */
 @Composable
-private fun SheetHandle() {
+internal fun rememberVoiceToggle(transcriber: VoiceTranscriber, onFinal: (String) -> Unit): () -> Unit {
+    val context = LocalContext.current
+    val currentOnFinal by rememberUpdatedState(onFinal)
+    val showMessage: (String) -> Unit = { message ->
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
+    val startListening: () -> Unit = {
+        transcriber.start(onFinal = { currentOnFinal(it) }, onMessage = showMessage)
+    }
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startListening() else showMessage(context.getString(R.string.voice_permission_denied))
+    }
+    return {
+        when {
+            transcriber.isListening -> transcriber.stop()
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED -> startListening()
+            else -> micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+}
+
+/** While dictating, the live words follow what's already committed. */
+internal fun withLiveWords(text: String, transcriber: VoiceTranscriber): String {
+    val partial = transcriber.partialText
+    return if (transcriber.isListening && partial.isNotEmpty()) "${text.trimEnd()} $partial".trimStart() else text
+}
+
+@Composable
+internal fun SheetHandle() {
     Box(
         Modifier
             .padding(top = 10.dp, bottom = 14.dp)
@@ -261,7 +273,7 @@ private fun SheetHandle() {
 }
 
 @Composable
-private fun OnDeviceTag() {
+internal fun OnDeviceTag() {
     Row(
         modifier = Modifier
             .clip(CircleShape)
@@ -289,7 +301,7 @@ private fun OnDeviceTag() {
  * are read in the draw phase so level changes never recompose the sheet.
  */
 @Composable
-private fun MicButton(listening: Boolean, level: () -> Float, onClick: () -> Unit) {
+internal fun MicButton(listening: Boolean, level: () -> Float, onClick: () -> Unit) {
     val glass = Glass.colors
     val primary = MaterialTheme.colorScheme.primary
     val container by animateColorAsState(if (listening) primary else glass.inset, label = "mic")

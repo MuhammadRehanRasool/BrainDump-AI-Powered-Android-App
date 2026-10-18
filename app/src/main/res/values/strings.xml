@@ -72,6 +72,25 @@
     <string name="idea_expand">Show tasks</string>
     <string name="idea_collapse">Hide tasks</string>
     <string name="idea_progress">%1$d/%2$d</string>
+    <string name="idea_refine">Refine</string>
+
+    <string name="refine_title">Refine</string>
+    <string name="refine_hint">Tell Gemini Nano what to change…</string>
+    <string name="refine_send">Send</string>
+    <string name="refine_thinking">Refining on-device…</string>
+    <string name="refine_suggest_smaller">Make the tasks smaller</string>
+    <string name="refine_suggest_next">Add the next step</string>
+    <string name="refine_suggest_title">Shorter title</string>
+    <string name="refine_suggest_split">Split the first task in two</string>
+
+    <string name="export_share">Share all ideas</string>
+    <string name="export_save">Save all as Markdown file</string>
+    <string name="export_share_title">Share all ideas</string>
+    <string name="export_too_big">Too many ideas to share at once. Saving as a file instead.</string>
+    <string name="export_saved">Exported</string>
+    <string name="export_failed">Couldn\'t write the file</string>
+    <string name="export_unsplit">Unsplit:</string>
+    <string name="export_tags">Tags:</string>
 
     <string name="timeline_days">Days</string>
     <string name="timeline_months">Months</string>

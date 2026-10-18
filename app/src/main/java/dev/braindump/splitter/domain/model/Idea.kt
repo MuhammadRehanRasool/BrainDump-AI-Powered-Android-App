@@ -1,5 +1,7 @@
 package dev.braindump.splitter.domain.model
 
+import kotlinx.serialization.Serializable
+
 data class Idea(
     val id: Long,
     val rawInput: String,
@@ -11,6 +13,8 @@ data class Idea(
     val status: IdeaStatus,
     val error: String?,
     val createdAt: Long,
+    /** The refine conversation, oldest first. */
+    val refinements: List<RefineTurn> = emptyList(),
 ) {
     val completedCount: Int get() = tasks.count { it.done }
 
@@ -22,6 +26,14 @@ data class MicroTask(
     val index: Int,
     val text: String,
     val done: Boolean,
+)
+
+/** One exchange in an idea's refine chat: what the user asked and what changed. */
+@Serializable
+data class RefineTurn(
+    val ask: String,
+    val reply: String,
+    val at: Long,
 )
 
 enum class IdeaStatus { PENDING, READY, FAILED }

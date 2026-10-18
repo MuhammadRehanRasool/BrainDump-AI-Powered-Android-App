@@ -4,6 +4,7 @@ import dev.braindump.splitter.domain.model.AiStatus
 import dev.braindump.splitter.domain.model.CaptureOutcome
 import dev.braindump.splitter.domain.model.Idea
 import dev.braindump.splitter.domain.model.IdeaCategory
+import dev.braindump.splitter.domain.model.RefineOutcome
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -22,6 +23,12 @@ interface IdeaRepository {
     suspend fun toggleTask(ideaId: Long, taskIndex: Int)
 
     suspend fun retry(ideaId: Long)
+
+    /**
+     * Asks Gemini Nano to change a split idea ("make the tasks smaller", "add a step for X") and
+     * saves the result along with the exchange. Call while the app is in the foreground.
+     */
+    suspend fun refine(ideaId: Long, ask: String): RefineOutcome
 
     /** Overrides the category Gemini Nano picked. */
     suspend fun setCategory(ideaId: Long, category: IdeaCategory)

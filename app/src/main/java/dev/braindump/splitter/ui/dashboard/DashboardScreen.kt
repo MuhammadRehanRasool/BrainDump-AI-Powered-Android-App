@@ -6,6 +6,8 @@ import android.content.Context
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -44,11 +46,14 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -60,6 +65,8 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -96,6 +103,7 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @Composable
 fun DashboardRoute(viewModel: DashboardViewModel = hiltViewModel()) {
@@ -112,6 +120,8 @@ fun DashboardRoute(viewModel: DashboardViewModel = hiltViewModel()) {
         onRetry = viewModel::retry,
         onDelete = viewModel::delete,
         onCategoryChange = viewModel::setCategory,
+        onRefine = viewModel::refine,
+        onClearRefineError = viewModel::clearRefineError,
         onUsePreviewModelChange = viewModel::setUsePreviewModel,
     )
 }
@@ -124,10 +134,14 @@ fun DashboardScreen(
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
     onCategoryChange: (Long, IdeaCategory) -> Unit,
+    onRefine: (Long, String) -> Unit,
+    onClearRefineError: () -> Unit,
     onUsePreviewModelChange: (Boolean) -> Unit,
 ) {
     // Null while closed; otherwise whether the sheet starts dictating.
     var captureWithVoice by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    // The idea whose refine chat is open.
+    var refiningId by rememberSaveable { mutableStateOf<Long?>(null) }
     var savedMode by rememberSaveable { mutableStateOf(TimelineMode.DAYS) }
     var filter by rememberSaveable { mutableStateOf<IdeaCategory?>(null) }
     // Where to land after zooming in from a month or a year card.
@@ -142,6 +156,26 @@ fun DashboardScreen(
     val sections = remember(state.sections, activeFilter) { filterSections(state.sections, activeFilter) }
     val months = remember(sections) { summarizeMonths(sections) }
     val years = remember(months) { summarizeYears(months) }
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val allSections by rememberUpdatedState(state.sections)
+    val saveExportFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/markdown")) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val saved = saveExport(context, uri, exportMarkdown(context, allSections))
+                Toast.makeText(context, if (saved) R.string.export_saved else R.string.export_failed, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    // Export ignores the category filter: "all" means all.
+    val onSaveAll = { saveExportFile.launch(exportFileName()) }
+    val onShareAll = {
+        if (!shareExport(context, exportMarkdown(context, state.sections))) {
+            Toast.makeText(context, R.string.export_too_big, Toast.LENGTH_LONG).show()
+            saveExportFile.launch(exportFileName())
+        }
+    }
 
     val listState = rememberLazyListState()
     val monthsState = rememberLazyGridState()
@@ -169,6 +203,9 @@ fun DashboardScreen(
                     scrolled = scrolled,
                     usePreviewModel = state.usePreviewModel,
                     onUsePreviewModelChange = onUsePreviewModelChange,
+                    canExport = hasIdeas,
+                    onShareAll = onShareAll,
+                    onSaveAll = onSaveAll,
                 ) {
                     if (hasIdeas) {
                         TimelineSwitcher(
@@ -214,6 +251,7 @@ fun DashboardScreen(
                         onRetry = onRetry,
                         onDelete = onDelete,
                         onCategoryChange = onCategoryChange,
+                        onOpenRefine = { refiningId = it },
                     )
 
                     TimelineMode.MONTHS -> MonthsGrid(
@@ -251,6 +289,25 @@ fun DashboardScreen(
             onDismiss = { captureWithVoice = null },
         )
     }
+
+    refiningId?.let { id ->
+        val idea = remember(state.sections, id) {
+            state.sections.firstNotNullOfOrNull { section -> section.ideas.firstOrNull { it.id == id } }
+        }
+        if (idea != null) {
+            RefineSheet(
+                idea = idea,
+                state = state.refine,
+                onSend = { ask -> onRefine(id, ask) },
+                onToggleTask = onToggleTask,
+                onClearError = onClearRefineError,
+                onDismiss = { refiningId = null },
+            )
+        } else if (!state.isLoading) {
+            // Deleted while the chat was open.
+            LaunchedEffect(id) { refiningId = null }
+        }
+    }
 }
 
 /** The day-by-day list: today's view, and where month cards zoom into. */
@@ -267,6 +324,7 @@ private fun DaysList(
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
     onCategoryChange: (Long, IdeaCategory) -> Unit,
+    onOpenRefine: (Long) -> Unit,
 ) {
     val today = todayEpochDay()
     val aiStatus = state.aiStatus
@@ -323,6 +381,7 @@ private fun DaysList(
                     onRetry = onRetry,
                     onDelete = onDelete,
                     onCategoryChange = onCategoryChange,
+                    onRefine = onOpenRefine,
                     modifier = Modifier
                         .animateItem()
                         .padding(horizontal = 16.dp, vertical = 6.dp),
@@ -342,6 +401,9 @@ private fun TopBar(
     scrolled: Boolean,
     usePreviewModel: Boolean,
     onUsePreviewModelChange: (Boolean) -> Unit,
+    canExport: Boolean,
+    onShareAll: () -> Unit,
+    onSaveAll: () -> Unit,
     controls: @Composable ColumnScope.() -> Unit,
 ) {
     val glass = Glass.colors
@@ -374,6 +436,9 @@ private fun TopBar(
             OverflowMenu(
                 usePreviewModel = usePreviewModel,
                 onUsePreviewModelChange = onUsePreviewModelChange,
+                canExport = canExport,
+                onShareAll = onShareAll,
+                onSaveAll = onSaveAll,
             )
         }
         controls()
@@ -614,6 +679,9 @@ private fun EmptyState(modifier: Modifier = Modifier) {
 private fun OverflowMenu(
     usePreviewModel: Boolean,
     onUsePreviewModelChange: (Boolean) -> Unit,
+    canExport: Boolean,
+    onShareAll: () -> Unit,
+    onSaveAll: () -> Unit,
 ) {
     val context = LocalContext.current
     val canPin = remember(context) { ShortcutManagerCompat.isRequestPinShortcutSupported(context) }
@@ -624,6 +692,25 @@ private fun OverflowMenu(
             Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.dashboard_more))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            if (canExport) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.export_share)) },
+                    leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                    onClick = {
+                        open = false
+                        onShareAll()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.export_save)) },
+                    leadingIcon = { Icon(Icons.Filled.Done, contentDescription = null) },
+                    onClick = {
+                        open = false
+                        onSaveAll()
+                    },
+                )
+                HorizontalDivider()
+            }
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.dashboard_use_preview)) },
                 trailingIcon = { Checkbox(checked = usePreviewModel, onCheckedChange = null) },

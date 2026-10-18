@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Refresh
@@ -88,6 +89,7 @@ fun IdeaCard(
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
     onCategoryChange: (Long, IdeaCategory) -> Unit,
+    onRefine: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var expanded by rememberSaveable(idea.id) { mutableStateOf(false) }
@@ -171,7 +173,7 @@ fun IdeaCard(
                 exit = shrinkVertically(spring(stiffness = Spring.StiffnessMedium, visibilityThreshold = IntSize.VisibilityThreshold)) +
                     fadeOut(tween(durationMillis = 120)),
             ) {
-                ExpandedDetails(idea, onToggleTask, onRetry, onDelete, onCategoryChange)
+                ExpandedDetails(idea, onToggleTask, onRetry, onDelete, onCategoryChange, onRefine)
             }
         }
     }
@@ -274,7 +276,7 @@ private fun statusLine(idea: Idea, time: String): String = when (idea.status) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TechAnchors(anchors: List<String>) {
+internal fun TechAnchors(anchors: List<String>) {
     val primary = MaterialTheme.colorScheme.primary
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -295,6 +297,7 @@ private fun TechAnchors(anchors: List<String>) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ExpandedDetails(
     idea: Idea,
@@ -302,6 +305,7 @@ private fun ExpandedDetails(
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
     onCategoryChange: (Long, IdeaCategory) -> Unit,
+    onRefine: (Long) -> Unit,
 ) {
     val context = LocalContext.current
     val glass = Glass.colors
@@ -350,15 +354,22 @@ private fun ExpandedDetails(
             )
         }
 
-        Row(
+        // Wraps on narrow phones instead of squeezing the pills.
+        FlowRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (idea.status == IdeaStatus.FAILED) {
                 ActionPill(Icons.Filled.Refresh, stringResource(R.string.idea_retry), MaterialTheme.colorScheme.primary) {
                     onRetry(idea.id)
+                }
+            }
+            if (idea.status == IdeaStatus.READY) {
+                ActionPill(Icons.Filled.Edit, stringResource(R.string.idea_refine), MaterialTheme.colorScheme.primary) {
+                    onRefine(idea.id)
                 }
             }
             ActionPill(Icons.Filled.Share, stringResource(R.string.idea_share), MaterialTheme.colorScheme.primary) {
@@ -482,7 +493,7 @@ private fun ActionPill(icon: ImageVector, label: String, tint: Color, onClick: (
 }
 
 @Composable
-private fun TaskRow(task: MicroTask, onToggle: () -> Unit) {
+internal fun TaskRow(task: MicroTask, onToggle: () -> Unit) {
     val primary = MaterialTheme.colorScheme.primary
     val fill by animateColorAsState(
         targetValue = if (task.done) primary else Color.Transparent,

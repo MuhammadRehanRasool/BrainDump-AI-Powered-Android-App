@@ -6,7 +6,7 @@ import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [IdeaEntity::class], version = 2, exportSchema = false)
+@Database(entities = [IdeaEntity::class], version = 3, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class BrainDumpDatabase : RoomDatabase() {
     abstract fun ideaDao(): IdeaDao
@@ -18,6 +18,13 @@ abstract class BrainDumpDatabase : RoomDatabase() {
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE ideas ADD COLUMN category TEXT")
+            }
+        }
+
+        /** Adds the refine chat log; existing ideas start with no turns. */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE ideas ADD COLUMN refinements TEXT")
             }
         }
     }
