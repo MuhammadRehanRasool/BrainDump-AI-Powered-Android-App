@@ -17,26 +17,30 @@
     <string name="capture_listening">Listening on-device…</string>
     <string name="capture_submit">Split it</string>
     <string name="capture_splitting">Splitting on-device…</string>
+    <string name="capture_on_device">On-device</string>
     <string name="capture_result_split">Split: %1$s</string>
     <string name="capture_result_queued">Saved. It\'ll be split when Gemini Nano is ready.</string>
     <string name="capture_result_failed">Saved, but Gemini Nano couldn\'t split it</string>
 
     <string name="voice_unavailable">On-device speech recognition isn\'t available on this phone</string>
     <string name="voice_permission_denied">Microphone permission is needed for voice dumps</string>
-    <string name="voice_language_downloading">Downloading the offline speech pack. Try again in a minute.</string>
+    <string name="voice_language_downloading">No offline speech pack for %1$s yet. Android is downloading it; try again in a minute.</string>
+    <string name="voice_model_downloading">The on-device speech model is still downloading. Try again in a minute.</string>
     <string name="voice_busy">The speech recognizer is busy. Try again.</string>
     <string name="voice_error">Voice input stopped unexpectedly</string>
 
     <string name="dashboard_fab">Dump</string>
+    <string name="dashboard_voice">Dump by voice</string>
     <string name="dashboard_more">More options</string>
     <string name="dashboard_add_tile">Add Quick Settings tile</string>
     <string name="dashboard_pin_voice">Add voice dump to home screen</string>
     <string name="dashboard_pin_type">Add type dump to home screen</string>
-    <string name="quick_dump_label">Quick dump</string>
 
     <string name="widget_label">BrainDump</string>
     <string name="widget_description">Tap to type an idea, or tap the mic to say it</string>
     <string name="widget_hint">Dump an idea…</string>
+    <string name="widget_prompt">What\'s on your mind?</string>
+    <string name="widget_type">Type</string>
     <string name="dashboard_tile_added">Tile added. Swipe down to dump ideas anywhere.</string>
     <string name="dashboard_tile_already_added">The tile is already in Quick Settings</string>
     <string name="dashboard_tile_not_added">Tile wasn\'t added</string>
@@ -57,6 +61,8 @@
     <string name="idea_failed">Couldn\'t split this one</string>
     <string name="idea_retry">Retry</string>
     <string name="idea_delete">Delete</string>
+    <string name="idea_share">Share</string>
+    <string name="idea_share_title">Share idea</string>
     <string name="idea_original">Original dump</string>
     <string name="idea_expand">Show tasks</string>
     <string name="idea_collapse">Hide tasks</string>

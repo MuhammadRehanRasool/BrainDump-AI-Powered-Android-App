@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- @android:id/background lets the launcher animate the widget into the capture sheet. -->
+<!-- 3x1 and wider: a search-bar style pill plus the mic.
+     @android:id/background lets the launcher animate the widget into the capture sheet. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@android:id/background"
     android:layout_width="match_parent"

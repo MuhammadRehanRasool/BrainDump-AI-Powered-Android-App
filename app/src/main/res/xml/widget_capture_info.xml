@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Resizes down to a single cell; CaptureWidgetProvider swaps layouts to fit each size. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/widget_description"
     android:initialLayout="@layout/widget_capture"
-    android:minWidth="180dp"
-    android:minHeight="48dp"
-    android:minResizeWidth="140dp"
-    android:minResizeHeight="48dp"
+    android:minWidth="250dp"
+    android:minHeight="40dp"
+    android:minResizeWidth="40dp"
+    android:minResizeHeight="40dp"
     android:previewLayout="@layout/widget_capture"
     android:resizeMode="horizontal|vertical"
     android:targetCellWidth="4"

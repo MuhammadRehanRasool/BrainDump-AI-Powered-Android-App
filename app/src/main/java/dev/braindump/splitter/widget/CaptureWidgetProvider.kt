@@ -5,12 +5,15 @@ import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
+import android.util.SizeF
 import android.widget.RemoteViews
+import androidx.annotation.LayoutRes
 import dev.braindump.splitter.R
 import dev.braindump.splitter.ui.capture.CaptureActivity
 
 /**
- * Home-screen capture bar: tap the bar to type, tap the mic to dictate. The layout is
+ * Home-screen capture widget that fits any size, from a single mic button up to a full card:
+ * the launcher picks the largest layout that fits as the widget is resized. The layouts are
  * static, so there is no update schedule and the widget costs nothing in the background.
  */
 class CaptureWidgetProvider : AppWidgetProvider() {
@@ -20,9 +23,18 @@ class CaptureWidgetProvider : AppWidgetProvider() {
         appWidgetIds.forEach { appWidgetManager.updateAppWidget(it, views) }
     }
 
-    private fun buildViews(context: Context): RemoteViews =
-        RemoteViews(context.packageName, R.layout.widget_capture).apply {
-            setOnClickPendingIntent(R.id.widget_type, captureIntent(context, voice = false))
+    private fun buildViews(context: Context): RemoteViews = RemoteViews(
+        mapOf(
+            SizeF(40f, 40f) to layout(context, R.layout.widget_capture_icon, typeButton = false),
+            SizeF(100f, 40f) to layout(context, R.layout.widget_capture_buttons),
+            SizeF(200f, 40f) to layout(context, R.layout.widget_capture),
+            SizeF(140f, 150f) to layout(context, R.layout.widget_capture_large),
+        )
+    )
+
+    private fun layout(context: Context, @LayoutRes layoutId: Int, typeButton: Boolean = true): RemoteViews =
+        RemoteViews(context.packageName, layoutId).apply {
+            if (typeButton) setOnClickPendingIntent(R.id.widget_type, captureIntent(context, voice = false))
             setOnClickPendingIntent(R.id.widget_voice, captureIntent(context, voice = true))
         }
 

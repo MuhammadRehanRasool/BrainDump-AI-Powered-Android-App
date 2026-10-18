@@ -33,7 +33,6 @@ class CaptureActivity : ComponentActivity() {
                 LaunchedEffect(state) {
                     val finished = state as? CaptureUiState.Finished ?: return@LaunchedEffect
                     showOutcome(finished.outcome)
-                    finish()
                 }
 
                 CaptureSheet(
@@ -42,6 +41,9 @@ class CaptureActivity : ComponentActivity() {
                     hideOnSubmit = false,
                     onSubmit = viewModel::submit,
                     onDismiss = { if (!isFinishing) finish() },
+                    // Slide the sheet away first; finishing straight away would cut it off mid-frame.
+                    close = state is CaptureUiState.Finished,
+                    overApps = true,
                 )
             }
         }

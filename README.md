@@ -4,9 +4,9 @@
 
 ## How it flows
 
-1. **Capture.** Use the Quick Settings tile, a launcher shortcut (long-press the icon), or the Dump button. Voice runs through the phone's on-device speech recognizer and fills the text box live.
-2. **Split.** The idea goes into Room, then straight to Gemini Nano via the ML Kit GenAI Prompt API while the sheet is still open. That usually takes a second or two. Then the sheet closes and a toast shows the title.
-3. **Act.** The dashboard groups ideas by day. Tap a card to see its 3 checkboxes.
+1. **Capture.** Use the Quick Settings tile, the home-screen widget (resizes from a single mic button up to a 2x2 card), a launcher shortcut (long-press the icon), or the Dump and mic buttons. Voice runs through the phone's on-device speech recognizer and fills the text box live.
+2. **Split.** The idea goes into Room, then straight to Gemini Nano via the ML Kit GenAI Prompt API while the sheet is still open. That usually takes a second or two. Then the sheet closes and a toast shows the title. If the active Nano build can't produce valid JSON, the other builds AICore has installed are tried, and the one that works is used from then on.
+3. **Act.** The dashboard groups ideas by day. Tap a card to see its 3 checkboxes, or share it as a plain-text checklist.
 
 Gemini Nano only answers apps in the foreground. If you swipe the sheet away mid-split, or the model isn't ready, the idea is kept and split the next time you open the app. Failed ideas get a Retry button.
 
@@ -14,7 +14,7 @@ Gemini Nano only answers apps in the foreground. If you swipe the sheet away mid
 
 - Android 12+ (SDK 31), arm64.
 - A phone with Gemini Nano in AICore (Pixel 9/10 series and other supported devices), with AICore and Private Compute Services updated from the Play Store.
-- Voice: an on-device speech pack for your language. If it's missing, the app asks the system to download it.
+- Voice: an on-device speech pack for your language. Packs exist per region (en-US, not en-PK), so the app uses an installed pack in your language before asking the system to download one.
 
 ## CI
 

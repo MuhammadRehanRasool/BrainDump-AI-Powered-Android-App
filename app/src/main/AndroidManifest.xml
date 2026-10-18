@@ -55,21 +55,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Second app icon that opens the capture sheet directly. Also selectable as the
-             target of Pixel's Quick Tap (double-tap the back of the phone). -->
-        <activity-alias
-            android:name=".QuickDump"
-            android:exported="true"
-            android:icon="@mipmap/ic_quick_dump"
-            android:label="@string/quick_dump_label"
-            android:roundIcon="@mipmap/ic_quick_dump"
-            android:targetActivity=".ui.capture.CaptureActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
         <receiver
             android:name=".widget.CaptureWidgetProvider"
             android:exported="true"

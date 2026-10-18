@@ -19,9 +19,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -59,8 +62,9 @@ sealed class SplitException(
  *
  * Requests are serialized through [mutex] because AICore runs one inference at a time.
  * The JSON contract is enforced in steps: a system instruction (when supported) with the
- * schema and an example, then a parser that validates and normalizes the answer, then one
- * stricter regeneration if the first answer fails validation.
+ * schema and an example, then a lenient parser that validates and normalizes the answer, then
+ * one stricter regeneration, then the other builds AICore has installed (nano-v3 misses the
+ * schema more often than nano-v4), and finally a salvage of any plain numbered list.
  */
 @Singleton
 class AICoreManager @Inject constructor(
@@ -143,12 +147,14 @@ class AICoreManager @Inject constructor(
 
             var model = clientLocked()
             var useSystemInstruction = systemPromptSupportedLocked(model)
+            val answers = ArrayList<String>()
             var lastProblem = "Gemini Nano returned no usable JSON"
 
             var attempt = 0
             while (attempt < MAX_GENERATION_ATTEMPTS) {
                 val output = try {
-                    generate(model, input, strict = attempt > 0, useSystemInstruction)
+                    // The retry puts the rules in the user turn; some Nano builds follow them better there.
+                    generate(model, input, strict = attempt > 0, useSystemInstruction && attempt == 0)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -173,12 +179,65 @@ class AICoreManager @Inject constructor(
                     lastProblem = "Gemini Nano returned an empty answer"
                     continue
                 }
+                answers += output
                 val parsed = parseBreakdown(output)
                 if (parsed != null) return@withLock parsed
                 lastProblem = "Gemini Nano's answer didn't match the task schema"
             }
-            throw SplitException.MalformedOutput(lastProblem)
+
+            // This build can't follow the schema for this dump; another installed build often can.
+            splitWithOtherModelsLocked(input, answers)
+                ?: salvageBreakdown(answers, input)
+                ?: throw SplitException.MalformedOutput(lastProblem)
         }
+    }
+
+    /**
+     * Tries every other build AICore can serve right now. One that returns valid JSON becomes
+     * the active model for the rest of the session, so later splits go straight to it.
+     */
+    private suspend fun splitWithOtherModelsLocked(input: String, answers: MutableList<String>): IdeaBreakdown? {
+        val current = activeOption
+        for (option in fallbackOptions()) {
+            if (option == current || option in brokenOptions) continue
+            val candidate = Generation.getClient(configFor(option))
+            var promoted = false
+            try {
+                if (candidate.checkStatus() != FeatureStatus.AVAILABLE) continue
+                val useSystemInstruction = try {
+                    candidate.isSystemPromptAvailable()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    false
+                }
+                for (attempt in 0 until MAX_GENERATION_ATTEMPTS) {
+                    val output = generate(candidate, input, strict = attempt > 0, useSystemInstruction && attempt == 0)
+                    if (output.isNullOrBlank()) continue
+                    answers += output
+                    val parsed = parseBreakdown(output) ?: continue
+                    promoteLocked(option, candidate, useSystemInstruction)
+                    promoted = true
+                    return parsed
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // This build can't serve right now; the next one may.
+            } finally {
+                if (!promoted) candidate.close()
+            }
+        }
+        return null
+    }
+
+    private suspend fun promoteLocked(option: ModelOption, model: GenerativeModel, useSystemInstruction: Boolean) {
+        dropClientLocked()
+        client = model
+        activeOption = option
+        systemPromptSupported = useSystemInstruction
+        activeModelName = baseModelName(model)
+        _status.value = AiStatus.Ready(activeModelName)
     }
 
     private suspend fun generate(
@@ -284,14 +343,7 @@ class AICoreManager @Inject constructor(
         var downloadable: GenerativeModel? = null
         var downloadableOption: ModelOption? = null
         for (option in modelOptions().filterNot { it in brokenOptions }) {
-            val candidate = Generation.getClient(
-                generationConfig {
-                    modelConfig = modelConfig {
-                        releaseStage = option.releaseStage
-                        preference = option.preference
-                    }
-                }
-            )
+            val candidate = Generation.getClient(configFor(option))
             val featureStatus = try {
                 candidate.checkStatus()
             } catch (e: CancellationException) {
@@ -326,12 +378,24 @@ class AICoreManager @Inject constructor(
     }
 
     private fun modelOptions(): List<ModelOption> = buildList {
-        if (settings.usePreviewModel.value) {
-            add(ModelOption(ModelReleaseStage.PREVIEW, ModelPreference.FULL))
-            add(ModelOption(ModelReleaseStage.PREVIEW, ModelPreference.FAST))
-        }
+        if (settings.usePreviewModel.value) addAll(previewOptions)
         add(ModelOption(ModelReleaseStage.STABLE, ModelPreference.FULL))
         add(ModelOption(ModelReleaseStage.STABLE, ModelPreference.FAST))
+    }
+
+    /** The usual order, then preview builds even when not opted in: better than failing the split. */
+    private fun fallbackOptions(): List<ModelOption> = (modelOptions() + previewOptions).distinct()
+
+    private val previewOptions = listOf(
+        ModelOption(ModelReleaseStage.PREVIEW, ModelPreference.FULL),
+        ModelOption(ModelReleaseStage.PREVIEW, ModelPreference.FAST),
+    )
+
+    private fun configFor(option: ModelOption) = generationConfig {
+        modelConfig = modelConfig {
+            releaseStage = option.releaseStage
+            preference = option.preference
+        }
     }
 
     private suspend fun baseModelName(model: GenerativeModel): String? = try {
@@ -385,19 +449,75 @@ class AICoreManager @Inject constructor(
 
     internal fun parseBreakdown(modelOutput: String): IdeaBreakdown? {
         val start = modelOutput.indexOf('{')
-        val end = modelOutput.lastIndexOf('}')
-        if (start < 0 || end <= start) return null
+        if (start < 0) return null
+        return jsonCandidates(modelOutput, start)
+            .mapNotNull(::decodeObject)
+            .mapNotNull(::toBreakdown)
+            .firstOrNull()
+    }
 
-        val dto = try {
-            json.decodeFromString(IdeaBreakdownDto.serializer(), modelOutput.substring(start, end + 1))
-        } catch (e: IllegalArgumentException) { // includes SerializationException
-            return null
+    /** The answer as written, then repaired copies in case it was cut off at the token limit. */
+    private fun jsonCandidates(output: String, start: Int): Sequence<String> = sequence {
+        val end = output.lastIndexOf('}')
+        if (end > start) yield(output.substring(start, end + 1))
+        // Each pass also drops the last, possibly half-written, field.
+        var fragment = output.substring(start)
+        repeat(MAX_REPAIR_CUTS) {
+            yield(closeJson(fragment))
+            val cut = fragment.lastIndexOf(',')
+            if (cut <= 0) return@sequence
+            fragment = fragment.substring(0, cut)
         }
+    }
 
-        val title = cleanLine(dto.ideaTitle).take(MAX_TITLE_CHARS)
+    /** Closes whatever a cut-off answer left open: a string, arrays, the object. */
+    private fun closeJson(fragment: String): String {
+        val closers = ArrayDeque<Char>()
+        var inString = false
+        var escaped = false
+        for (c in fragment) {
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inString = false
+                }
+                continue
+            }
+            when (c) {
+                '"' -> inString = true
+                '{' -> closers.addLast('}')
+                '[' -> closers.addLast(']')
+                '}', ']' -> closers.removeLastOrNull()
+            }
+        }
+        val repaired = StringBuilder(fragment)
+        if (escaped) repaired.setLength(repaired.length - 1)
+        if (inString) repaired.append('"')
+        var end = repaired.length
+        while (end > 0 && (repaired[end - 1].isWhitespace() || repaired[end - 1] == ',')) end--
+        repaired.setLength(end)
+        if (repaired.endsWith(':')) repaired.append("null")
+        while (closers.isNotEmpty()) repaired.append(closers.removeLast())
+        return repaired.toString()
+    }
+
+    private fun decodeObject(candidate: String): JsonObject? = try {
+        json.parseToJsonElement(candidate) as? JsonObject
+    } catch (e: IllegalArgumentException) { // includes SerializationException
+        null
+    }
+
+    private fun toBreakdown(answer: JsonObject): IdeaBreakdown? {
+        // Smaller builds drift on key names and shapes, so keys match loosely and lists may arrive as one string.
+        val fields = answer.entries.associate { (key, value) -> key.lowercase().filter(Char::isLetterOrDigit) to value }
+        fun field(names: List<String>, hint: String): JsonElement? =
+            names.firstNotNullOfOrNull { fields[it] } ?: fields.entries.firstOrNull { hint in it.key }?.value
+
+        val title = cleanLine(field(TITLE_KEYS, "title")?.let(::text).orEmpty()).take(MAX_TITLE_CHARS)
         if (title.isEmpty()) return null
 
-        val tasks = dto.immediateMicroTasks.asSequence()
+        val tasks = field(TASK_KEYS, "task")?.let { items(it, TASK_SEPARATORS) }.orEmpty().asSequence()
             .map(::cleanLine)
             .filter { it.isNotEmpty() }
             .distinctBy { it.lowercase() }
@@ -405,7 +525,7 @@ class AICoreManager @Inject constructor(
             .toList()
         if (tasks.size != REQUIRED_TASKS) return null
 
-        val anchors = dto.techStackAnchors.asSequence()
+        val anchors = field(ANCHOR_KEYS, "stack")?.let { items(it, ANCHOR_SEPARATORS) }.orEmpty().asSequence()
             .map(::cleanLine)
             .filter { it.isNotEmpty() && it.length <= MAX_ANCHOR_CHARS }
             .distinctBy { it.lowercase() }
@@ -414,25 +534,59 @@ class AICoreManager @Inject constructor(
 
         return IdeaBreakdown(
             ideaTitle = title,
-            rawConcept = dto.rawConcept.trim(),
+            rawConcept = field(CONCEPT_KEYS, "concept")?.let(::text).orEmpty().trim(),
             techStackAnchors = anchors,
             immediateMicroTasks = tasks,
         )
     }
+
+    /** A value as text; for an object such as {"task": "...", "priority": 1}, its first string. */
+    private fun text(element: JsonElement): String = when (element) {
+        is JsonPrimitive -> element.contentOrNull.orEmpty()
+        is JsonArray -> element.joinToString(" ") { text(it) }
+        is JsonObject -> (element.values.firstOrNull { it is JsonPrimitive && it.isString } ?: element.values.firstOrNull())
+            ?.let(::text)
+            .orEmpty()
+    }
+
+    private fun items(element: JsonElement, separators: Regex): List<String> =
+        if (element is JsonArray) element.map(::text) else text(element).split(separators)
+
+    /** Last resort: an answer that ignored JSON but still listed steps keeps the dump useful. */
+    private fun salvageBreakdown(answers: List<String>, input: String): IdeaBreakdown? {
+        for (answer in answers.asReversed()) {
+            val steps = answer.lineSequence()
+                .filter { LIST_MARKER.containsMatchIn(it) }
+                .map(::cleanLine)
+                .filter { it.length in MIN_TASK_CHARS..MAX_TASK_CHARS && '{' !in it && '}' !in it }
+                .distinctBy { it.lowercase() }
+                .take(REQUIRED_TASKS)
+                .toList()
+            if (steps.size == REQUIRED_TASKS) {
+                return IdeaBreakdown(
+                    ideaTitle = titleFrom(input),
+                    rawConcept = "",
+                    techStackAnchors = emptyList(),
+                    immediateMicroTasks = steps,
+                )
+            }
+        }
+        return null
+    }
+
+    private fun titleFrom(input: String): String =
+        input.split(WHITESPACE)
+            .filter { it.isNotBlank() }
+            .take(SALVAGE_TITLE_WORDS)
+            .joinToString(" ")
+            .replaceFirstChar { it.titlecase() }
+            .take(MAX_TITLE_CHARS)
 
     private fun cleanLine(value: String): String =
         value.replace(LIST_MARKER, "").trim().trim('"', '\'', '`').trim()
 
     private fun sanitize(raw: String): String =
         raw.replace(INPUT_OPEN, "").replace(INPUT_CLOSE, "").trim().take(MAX_INPUT_CHARS)
-
-    @Serializable
-    internal data class IdeaBreakdownDto(
-        @SerialName("idea_title") val ideaTitle: String = "",
-        @SerialName("raw_concept") val rawConcept: String = "",
-        @SerialName("tech_stack_anchors") val techStackAnchors: List<String> = emptyList(),
-        @SerialName("immediate_micro_tasks") val immediateMicroTasks: List<String> = emptyList(),
-    )
 
     private companion object {
         const val TEMPERATURE = 0.2f
@@ -446,6 +600,20 @@ class AICoreManager @Inject constructor(
         const val MAX_ANCHORS = 5
         const val MAX_ANCHOR_CHARS = 40
         const val MAX_TITLE_CHARS = 80
+        const val MIN_TASK_CHARS = 4
+        const val MAX_TASK_CHARS = 160
+        const val SALVAGE_TITLE_WORDS = 6
+        const val MAX_REPAIR_CUTS = 4
+
+        // Keys compared lowercase with punctuation stripped, so "ideaTitle" and "idea_title" both match.
+        val TITLE_KEYS = listOf("ideatitle", "title", "name")
+        val CONCEPT_KEYS = listOf("rawconcept", "concept", "summary", "description")
+        val ANCHOR_KEYS = listOf("techstackanchors", "techstack", "stack", "technologies", "tech", "anchors")
+        val TASK_KEYS = listOf("immediatemicrotasks", "microtasks", "tasks", "immediatetasks", "nextsteps", "steps", "actions")
+
+        val TASK_SEPARATORS = Regex("""\n|;|\s+(?=\d+[.)]\s)""")
+        val ANCHOR_SEPARATORS = Regex("""[\n,;|]""")
+        val WHITESPACE = Regex("""\s+""")
 
         const val INPUT_OPEN = "<<<"
         const val INPUT_CLOSE = ">>>"
@@ -460,6 +628,7 @@ class AICoreManager @Inject constructor(
             Rules:
             - Output ONLY the JSON object. No markdown, no code fences, no commentary.
             - Use exactly these keys: "idea_title", "raw_concept", "tech_stack_anchors", "immediate_micro_tasks".
+            - Every value is a plain string or a list of plain strings. Keep it short; stop right after the closing brace.
             - idea_title: at most 8 words, Title Case.
             - raw_concept: 1 or 2 plain sentences saying what is being built and why.
             - tech_stack_anchors: 1 to 5 short technology names that fit the idea.
