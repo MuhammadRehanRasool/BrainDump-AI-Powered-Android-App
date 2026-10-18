@@ -3,6 +3,7 @@ package dev.braindump.splitter.domain.repository
 import dev.braindump.splitter.domain.model.AiStatus
 import dev.braindump.splitter.domain.model.CaptureOutcome
 import dev.braindump.splitter.domain.model.Idea
+import dev.braindump.splitter.domain.model.IdeaCategory
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -21,6 +22,9 @@ interface IdeaRepository {
     suspend fun toggleTask(ideaId: Long, taskIndex: Int)
 
     suspend fun retry(ideaId: Long)
+
+    /** Overrides the category Gemini Nano picked. */
+    suspend fun setCategory(ideaId: Long, category: IdeaCategory)
 
     suspend fun delete(ideaId: Long)
 

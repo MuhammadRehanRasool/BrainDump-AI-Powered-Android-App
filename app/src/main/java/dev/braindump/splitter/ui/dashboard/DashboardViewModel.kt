@@ -6,6 +6,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.braindump.splitter.di.ApplicationScope
 import dev.braindump.splitter.domain.model.AiStatus
 import dev.braindump.splitter.domain.model.Idea
+import dev.braindump.splitter.domain.model.IdeaCategory
 import dev.braindump.splitter.domain.repository.IdeaRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -74,6 +75,10 @@ class DashboardViewModel @Inject constructor(
 
     fun retry(ideaId: Long) {
         appScope.launch { repository.retry(ideaId) }
+    }
+
+    fun setCategory(ideaId: Long, category: IdeaCategory) {
+        appScope.launch { repository.setCategory(ideaId, category) }
     }
 
     fun delete(ideaId: Long) {

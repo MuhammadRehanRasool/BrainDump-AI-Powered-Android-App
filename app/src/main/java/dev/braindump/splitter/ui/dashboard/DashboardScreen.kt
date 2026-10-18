@@ -27,6 +27,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -36,6 +37,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -52,6 +55,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -70,6 +74,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -78,6 +83,7 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.braindump.splitter.R
 import dev.braindump.splitter.domain.model.AiStatus
+import dev.braindump.splitter.domain.model.IdeaCategory
 import dev.braindump.splitter.tile.BrainDumpTileService
 import dev.braindump.splitter.ui.capture.CaptureSheet
 import dev.braindump.splitter.ui.capture.QuickShortcuts
@@ -87,6 +93,7 @@ import dev.braindump.splitter.ui.theme.GlassBackdrop
 import dev.braindump.splitter.ui.theme.GlassIconButton
 import dev.braindump.splitter.ui.theme.GlassPanel
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -104,11 +111,11 @@ fun DashboardRoute(viewModel: DashboardViewModel = hiltViewModel()) {
         onToggleTask = viewModel::toggleTask,
         onRetry = viewModel::retry,
         onDelete = viewModel::delete,
+        onCategoryChange = viewModel::setCategory,
         onUsePreviewModelChange = viewModel::setUsePreviewModel,
     )
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DashboardScreen(
     state: DashboardUiState,
@@ -116,16 +123,39 @@ fun DashboardScreen(
     onToggleTask: (Long, Int) -> Unit,
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
+    onCategoryChange: (Long, IdeaCategory) -> Unit,
     onUsePreviewModelChange: (Boolean) -> Unit,
 ) {
     // Null while closed; otherwise whether the sheet starts dictating.
     var captureWithVoice by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    var savedMode by rememberSaveable { mutableStateOf(TimelineMode.DAYS) }
+    var filter by rememberSaveable { mutableStateOf<IdeaCategory?>(null) }
+    // Where to land after zooming in from a month or a year card.
+    var monthTarget by remember { mutableStateOf<YearMonth?>(null) }
+    var yearTarget by remember { mutableStateOf<Int?>(null) }
+
+    val hasIdeas = state.sections.isNotEmpty()
+    val mode = if (hasIdeas) savedMode else TimelineMode.DAYS
+    val categories = remember(state.sections) { categoryCounts(state.sections) }
+    // A filter whose last idea was deleted or recategorized would leave an empty screen.
+    val activeFilter = filter?.takeIf { selected -> categories.any { it.first == selected } }
+    val sections = remember(state.sections, activeFilter) { filterSections(state.sections, activeFilter) }
+    val months = remember(sections) { summarizeMonths(sections) }
+    val years = remember(months) { summarizeYears(months) }
+
     val listState = rememberLazyListState()
-    val fabExpanded by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
-    val scrolled by remember {
-        derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 }
+    val monthsState = rememberLazyGridState()
+    val yearsState = rememberLazyListState()
+    val fabExpanded by remember(mode) { derivedStateOf { mode != TimelineMode.DAYS || listState.firstVisibleItemIndex == 0 } }
+    val scrolled by remember(mode) {
+        derivedStateOf {
+            when (mode) {
+                TimelineMode.DAYS -> listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
+                TimelineMode.MONTHS -> monthsState.firstVisibleItemIndex > 0 || monthsState.firstVisibleItemScrollOffset > 0
+                TimelineMode.YEARS -> yearsState.firstVisibleItemIndex > 0 || yearsState.firstVisibleItemScrollOffset > 0
+            }
+        }
     }
-    val today = todayEpochDay()
 
     Box(Modifier.fillMaxSize()) {
         GlassBackdrop()
@@ -139,7 +169,21 @@ fun DashboardScreen(
                     scrolled = scrolled,
                     usePreviewModel = state.usePreviewModel,
                     onUsePreviewModelChange = onUsePreviewModelChange,
-                )
+                ) {
+                    if (hasIdeas) {
+                        TimelineSwitcher(
+                            mode = mode,
+                            onModeChange = { savedMode = it },
+                            modifier = Modifier.padding(start = 16.dp, top = 4.dp),
+                        )
+                        CategoryFilterRow(
+                            categories = categories,
+                            selected = activeFilter,
+                            onSelect = { filter = it },
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                    }
+                }
             },
             floatingActionButton = {
                 CaptureButtons(
@@ -149,51 +193,50 @@ fun DashboardScreen(
                 )
             },
         ) { innerPadding ->
-            // Top padding goes on the list itself so sticky headers pin below the bar.
-            LazyColumn(
-                state = listState,
+            val bottomPadding = innerPadding.calculateBottomPadding() + 104.dp
+            AnimatedContent(
+                targetState = mode,
+                transitionSpec = { zoomTransition() },
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(top = innerPadding.calculateTopPadding()),
-                contentPadding = PaddingValues(top = 4.dp, bottom = innerPadding.calculateBottomPadding() + 104.dp),
-            ) {
-                val aiStatus = state.aiStatus
-                if (aiStatus is AiStatus.Unavailable || aiStatus is AiStatus.Downloading) {
-                    item(key = "ai-banner", contentType = "banner") {
-                        AiBanner(
-                            aiStatus,
-                            Modifier
-                                .animateItem()
-                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                        )
-                    }
-                }
+                label = "timeline",
+            ) { shown ->
+                when (shown) {
+                    TimelineMode.DAYS -> DaysList(
+                        state = state,
+                        sections = sections,
+                        listState = listState,
+                        scrollToMonth = monthTarget,
+                        onScrollHandled = { monthTarget = null },
+                        bottomPadding = bottomPadding,
+                        onToggleTask = onToggleTask,
+                        onRetry = onRetry,
+                        onDelete = onDelete,
+                        onCategoryChange = onCategoryChange,
+                    )
 
-                if (!state.isLoading && state.sections.isEmpty()) {
-                    item(key = "empty", contentType = "empty") {
-                        EmptyState(Modifier.fillParentMaxHeight(0.7f))
-                    }
-                }
+                    TimelineMode.MONTHS -> MonthsGrid(
+                        months = months,
+                        state = monthsState,
+                        scrollToYear = yearTarget,
+                        onScrollHandled = { yearTarget = null },
+                        onOpenMonth = { month ->
+                            monthTarget = month
+                            savedMode = TimelineMode.DAYS
+                        },
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = bottomPadding),
+                    )
 
-                state.sections.forEach { section ->
-                    stickyHeader(key = "day-${section.epochDay}", contentType = "header") {
-                        DayHeader(epochDay = section.epochDay, today = today)
-                    }
-                    items(
-                        items = section.ideas,
-                        key = { it.id },
-                        contentType = { "idea" },
-                    ) { idea ->
-                        IdeaCard(
-                            idea = idea,
-                            onToggleTask = onToggleTask,
-                            onRetry = onRetry,
-                            onDelete = onDelete,
-                            modifier = Modifier
-                                .animateItem()
-                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                        )
-                    }
+                    TimelineMode.YEARS -> YearsList(
+                        years = years,
+                        state = yearsState,
+                        onOpenYear = { year ->
+                            yearTarget = year
+                            savedMode = TimelineMode.MONTHS
+                        },
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = bottomPadding),
+                    )
                 }
             }
         }
@@ -210,18 +253,101 @@ fun DashboardScreen(
     }
 }
 
-/** Large title over the backdrop; turns into a frosted bar once the list scrolls beneath it. */
+/** The day-by-day list: today's view, and where month cards zoom into. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DaysList(
+    state: DashboardUiState,
+    sections: List<DaySection>,
+    listState: LazyListState,
+    scrollToMonth: YearMonth?,
+    onScrollHandled: () -> Unit,
+    bottomPadding: Dp,
+    onToggleTask: (Long, Int) -> Unit,
+    onRetry: (Long) -> Unit,
+    onDelete: (Long) -> Unit,
+    onCategoryChange: (Long, IdeaCategory) -> Unit,
+) {
+    val today = todayEpochDay()
+    val aiStatus = state.aiStatus
+    val showBanner = aiStatus is AiStatus.Unavailable || aiStatus is AiStatus.Downloading
+    val showEmpty = !state.isLoading && state.sections.isEmpty()
+
+    LaunchedEffect(scrollToMonth) {
+        val month = scrollToMonth ?: return@LaunchedEffect
+        // Item order below: banner, empty state, then a header plus its ideas per day.
+        var index = (if (showBanner) 1 else 0) + (if (showEmpty) 1 else 0)
+        for (section in sections) {
+            if (YearMonth.from(LocalDate.ofEpochDay(section.epochDay)) == month) break
+            index += 1 + section.ideas.size
+        }
+        listState.scrollToItem(index)
+        onScrollHandled()
+    }
+
+    // Top padding goes on the list itself so sticky headers pin below the bar.
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(top = 4.dp, bottom = bottomPadding),
+    ) {
+        if (showBanner) {
+            item(key = "ai-banner", contentType = "banner") {
+                AiBanner(
+                    aiStatus,
+                    Modifier
+                        .animateItem()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+        }
+
+        if (showEmpty) {
+            item(key = "empty", contentType = "empty") {
+                EmptyState(Modifier.fillParentMaxHeight(0.7f))
+            }
+        }
+
+        sections.forEach { section ->
+            stickyHeader(key = "day-${section.epochDay}", contentType = "header") {
+                DayHeader(epochDay = section.epochDay, today = today)
+            }
+            items(
+                items = section.ideas,
+                key = { it.id },
+                contentType = { "idea" },
+            ) { idea ->
+                IdeaCard(
+                    idea = idea,
+                    onToggleTask = onToggleTask,
+                    onRetry = onRetry,
+                    onDelete = onDelete,
+                    onCategoryChange = onCategoryChange,
+                    modifier = Modifier
+                        .animateItem()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Large title over the backdrop, with the timeline controls under it. It turns into a
+ * frosted bar once content scrolls beneath it.
+ */
 @Composable
 private fun TopBar(
     aiStatus: AiStatus,
     scrolled: Boolean,
     usePreviewModel: Boolean,
     onUsePreviewModelChange: (Boolean) -> Unit,
+    controls: @Composable ColumnScope.() -> Unit,
 ) {
     val glass = Glass.colors
     val edge = MaterialTheme.colorScheme.outlineVariant
     val barAlpha by animateFloatAsState(if (scrolled) 1f else 0f, tween(250), label = "bar")
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .drawBehind {
@@ -235,17 +361,22 @@ private fun TopBar(
                 )
             }
             .statusBarsPadding()
-            .padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(bottom = 12.dp),
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
-            StatusChip(aiStatus, Modifier.padding(top = 6.dp))
+        Row(
+            modifier = Modifier.padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
+                StatusChip(aiStatus, Modifier.padding(top = 6.dp))
+            }
+            OverflowMenu(
+                usePreviewModel = usePreviewModel,
+                onUsePreviewModelChange = onUsePreviewModelChange,
+            )
         }
-        OverflowMenu(
-            usePreviewModel = usePreviewModel,
-            onUsePreviewModelChange = onUsePreviewModelChange,
-        )
+        controls()
     }
 }
 

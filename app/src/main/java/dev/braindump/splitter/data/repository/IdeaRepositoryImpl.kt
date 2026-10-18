@@ -9,6 +9,7 @@ import dev.braindump.splitter.data.local.toDomain
 import dev.braindump.splitter.domain.model.AiStatus
 import dev.braindump.splitter.domain.model.CaptureOutcome
 import dev.braindump.splitter.domain.model.Idea
+import dev.braindump.splitter.domain.model.IdeaCategory
 import dev.braindump.splitter.domain.model.IdeaStatus
 import dev.braindump.splitter.domain.repository.IdeaRepository
 import kotlinx.coroutines.flow.Flow
@@ -59,6 +60,10 @@ class IdeaRepositoryImpl @Inject constructor(
         if (dao.resetFailed(ideaId, System.currentTimeMillis()) > 0) splitPending()
     }
 
+    override suspend fun setCategory(ideaId: Long, category: IdeaCategory) {
+        dao.setCategory(ideaId, category.name, System.currentTimeMillis())
+    }
+
     override suspend fun delete(ideaId: Long) {
         dao.deleteById(ideaId)
     }
@@ -102,6 +107,7 @@ class IdeaRepositoryImpl @Inject constructor(
                             rawConcept = breakdown.rawConcept,
                             techStackAnchors = breakdown.techStackAnchors,
                             immediateMicroTasks = breakdown.immediateMicroTasks,
+                            category = breakdown.category.name,
                             completedMask = 0,
                             status = IdeaStatus.READY,
                             lastError = null,

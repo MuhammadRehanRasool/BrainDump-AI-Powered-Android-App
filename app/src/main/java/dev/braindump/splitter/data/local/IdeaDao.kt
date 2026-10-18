@@ -40,6 +40,9 @@ interface IdeaDao {
     )
     suspend fun resetFailed(id: Long, now: Long): Int
 
+    @Query("UPDATE ideas SET category = :category, updated_at = :now WHERE id = :id")
+    suspend fun setCategory(id: Long, category: String, now: Long)
+
     @Query("DELETE FROM ideas WHERE id = :id")
     suspend fun deleteById(id: Long)
 }

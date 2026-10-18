@@ -31,7 +31,9 @@ object AppModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): BrainDumpDatabase =
-        Room.databaseBuilder(context, BrainDumpDatabase::class.java, BrainDumpDatabase.NAME).build()
+        Room.databaseBuilder(context, BrainDumpDatabase::class.java, BrainDumpDatabase.NAME)
+            .addMigrations(BrainDumpDatabase.MIGRATION_1_2)
+            .build()
 
     @Provides
     fun provideIdeaDao(database: BrainDumpDatabase): IdeaDao = database.ideaDao()

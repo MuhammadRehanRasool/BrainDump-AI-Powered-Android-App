@@ -5,6 +5,7 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import dev.braindump.splitter.domain.model.Idea
+import dev.braindump.splitter.domain.model.IdeaCategory
 import dev.braindump.splitter.domain.model.IdeaStatus
 import dev.braindump.splitter.domain.model.MicroTask
 
@@ -25,6 +26,9 @@ data class IdeaEntity(
     val techStackAnchors: List<String> = emptyList(),
     @ColumnInfo(name = "immediate_micro_tasks")
     val immediateMicroTasks: List<String> = emptyList(),
+    /** [IdeaCategory] name; null until the idea is split (or for ideas saved before categories existed). */
+    @ColumnInfo(name = "category")
+    val category: String? = null,
     /** Bit i set = micro task i checked off. */
     @ColumnInfo(name = "completed_mask")
     val completedMask: Int = 0,
@@ -49,6 +53,7 @@ fun IdeaEntity.toDomain(): Idea = Idea(
     tasks = immediateMicroTasks.mapIndexed { index, text ->
         MicroTask(index = index, text = text, done = (completedMask and (1 shl index)) != 0)
     },
+    category = IdeaCategory.parse(category),
     status = status,
     error = lastError,
     createdAt = createdAt,

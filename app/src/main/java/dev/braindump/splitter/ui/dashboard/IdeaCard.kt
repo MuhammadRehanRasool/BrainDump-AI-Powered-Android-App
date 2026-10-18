@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
@@ -38,7 +39,11 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -68,6 +73,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import dev.braindump.splitter.R
 import dev.braindump.splitter.domain.model.Idea
+import dev.braindump.splitter.domain.model.IdeaCategory
 import dev.braindump.splitter.domain.model.IdeaStatus
 import dev.braindump.splitter.domain.model.MicroTask
 import dev.braindump.splitter.ui.theme.Glass
@@ -81,6 +87,7 @@ fun IdeaCard(
     onToggleTask: (Long, Int) -> Unit,
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
+    onCategoryChange: (Long, IdeaCategory) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var expanded by rememberSaveable(idea.id) { mutableStateOf(false) }
@@ -131,16 +138,21 @@ fun IdeaCard(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    Text(
-                        text = statusLine(idea, time),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (idea.status == IdeaStatus.FAILED) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
+                    Row(
+                        modifier = Modifier.padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = statusLine(idea, time),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (idea.status == IdeaStatus.FAILED) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        if (idea.status == IdeaStatus.READY) CategoryTag(idea.category, Modifier.padding(start = 8.dp))
+                    }
                 }
                 Icon(
                     imageVector = Icons.Filled.KeyboardArrowDown,
@@ -159,7 +171,7 @@ fun IdeaCard(
                 exit = shrinkVertically(spring(stiffness = Spring.StiffnessMedium, visibilityThreshold = IntSize.VisibilityThreshold)) +
                     fadeOut(tween(durationMillis = 120)),
             ) {
-                ExpandedDetails(idea, onToggleTask, onRetry, onDelete)
+                ExpandedDetails(idea, onToggleTask, onRetry, onDelete, onCategoryChange)
             }
         }
     }
@@ -289,11 +301,14 @@ private fun ExpandedDetails(
     onToggleTask: (Long, Int) -> Unit,
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
+    onCategoryChange: (Long, IdeaCategory) -> Unit,
 ) {
     val context = LocalContext.current
     val glass = Glass.colors
+    var confirmDelete by remember { mutableStateOf(false) }
     Column(Modifier.padding(top = 12.dp)) {
         if (idea.status == IdeaStatus.READY) {
+            CategoryPicker(idea.category, onPick = { onCategoryChange(idea.id, it) })
             if (idea.concept.isNotBlank()) {
                 Text(
                     text = idea.concept,
@@ -350,7 +365,95 @@ private fun ExpandedDetails(
                 shareIdea(context, idea)
             }
             ActionPill(Icons.Filled.Delete, stringResource(R.string.idea_delete), MaterialTheme.colorScheme.error) {
+                confirmDelete = true
+            }
+        }
+    }
+
+    if (confirmDelete) {
+        DeleteDialog(
+            title = idea.displayTitle,
+            onConfirm = {
+                confirmDelete = false
                 onDelete(idea.id)
+            },
+            onDismiss = { confirmDelete = false },
+        )
+    }
+}
+
+/** Deleting can't be undone, so it asks first and names the idea. */
+@Composable
+private fun DeleteDialog(title: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+        title = { Text(stringResource(R.string.idea_delete_title)) },
+        text = {
+            Text(
+                text = stringResource(R.string.idea_delete_body, title),
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(stringResource(R.string.idea_delete), color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.idea_delete_cancel)) }
+        },
+        shape = MaterialTheme.shapes.extraLarge,
+        containerColor = Glass.colors.fillStrong,
+        tonalElevation = 0.dp,
+    )
+}
+
+/** "Category: 💼 Work ▾", for when Gemini Nano filed it in the wrong place. */
+@Composable
+private fun CategoryPicker(current: IdeaCategory, onPick: (IdeaCategory) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.padding(bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = stringResource(R.string.idea_category),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(end = 8.dp),
+        )
+        Box {
+            Row(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable(role = Role.DropdownList, onClick = { open = true }),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CategoryTag(current)
+                Icon(
+                    imageVector = Icons.Filled.ArrowDropDown,
+                    contentDescription = stringResource(R.string.idea_category_change),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                IdeaCategory.entries.forEach { category ->
+                    DropdownMenuItem(
+                        text = { Text("${category.emoji}  ${stringResource(category.label)}") },
+                        trailingIcon = if (category == current) {
+                            { Icon(Icons.Filled.Check, contentDescription = null) }
+                        } else {
+                            null
+                        },
+                        onClick = {
+                            open = false
+                            if (category != current) onPick(category)
+                        },
+                    )
+                }
             }
         }
     }

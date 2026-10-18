@@ -61,12 +61,35 @@
     <string name="idea_failed">Couldn\'t split this one</string>
     <string name="idea_retry">Retry</string>
     <string name="idea_delete">Delete</string>
+    <string name="idea_delete_title">Delete this idea?</string>
+    <string name="idea_delete_body">“%1$s” and its tasks will be gone for good.</string>
+    <string name="idea_delete_cancel">Cancel</string>
+    <string name="idea_category">Category</string>
+    <string name="idea_category_change">Change category</string>
     <string name="idea_share">Share</string>
     <string name="idea_share_title">Share idea</string>
     <string name="idea_original">Original dump</string>
     <string name="idea_expand">Show tasks</string>
     <string name="idea_collapse">Hide tasks</string>
     <string name="idea_progress">%1$d/%2$d</string>
+
+    <string name="timeline_days">Days</string>
+    <string name="timeline_months">Months</string>
+    <string name="timeline_years">Years</string>
+    <string name="filter_all">All</string>
+    <plurals name="timeline_ideas">
+        <item quantity="one">%1$d idea</item>
+        <item quantity="other">%1$d ideas</item>
+    </plurals>
+
+    <string name="category_personal">Personal</string>
+    <string name="category_work">Work</string>
+    <string name="category_health">Health</string>
+    <string name="category_learning">Learning</string>
+    <string name="category_money">Money</string>
+    <string name="category_creative">Creative</string>
+    <string name="category_tech">Tech</string>
+    <string name="category_other">Other</string>
 
     <string name="day_today">Today</string>
     <string name="day_yesterday">Yesterday</string>

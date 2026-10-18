@@ -13,6 +13,7 @@ import com.google.mlkit.genai.prompt.generateContentRequest
 import com.google.mlkit.genai.prompt.generationConfig
 import com.google.mlkit.genai.prompt.modelConfig
 import dev.braindump.splitter.domain.model.AiStatus
+import dev.braindump.splitter.domain.model.IdeaCategory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +35,7 @@ data class IdeaBreakdown(
     val rawConcept: String,
     val techStackAnchors: List<String>,
     val immediateMicroTasks: List<String>,
+    val category: IdeaCategory = IdeaCategory.OTHER,
 )
 
 sealed class SplitException(
@@ -537,6 +539,7 @@ class AICoreManager @Inject constructor(
             rawConcept = field(CONCEPT_KEYS, "concept")?.let(::text).orEmpty().trim(),
             techStackAnchors = anchors,
             immediateMicroTasks = tasks,
+            category = IdeaCategory.parse(field(CATEGORY_KEYS, "categor")?.let(::text)),
         )
     }
 
@@ -610,6 +613,7 @@ class AICoreManager @Inject constructor(
         val CONCEPT_KEYS = listOf("rawconcept", "concept", "summary", "description")
         val ANCHOR_KEYS = listOf("techstackanchors", "techstack", "stack", "technologies", "tech", "anchors")
         val TASK_KEYS = listOf("immediatemicrotasks", "microtasks", "tasks", "immediatetasks", "nextsteps", "steps", "actions")
+        val CATEGORY_KEYS = listOf("category", "categories", "type", "area", "domain")
 
         val TASK_SEPARATORS = Regex("""\n|;|\s+(?=\d+[.)]\s)""")
         val ANCHOR_SEPARATORS = Regex("""[\n,;|]""")
@@ -624,18 +628,23 @@ class AICoreManager @Inject constructor(
         val LIST_MARKER = Regex("""^\s*(?:[-*•]+|\d+[.)])\s*""")
 
         val SYSTEM_PROMPT = """
-            You are BrainDump, a senior engineering lead. Turn the messy idea between <<< and >>> into ONE JSON object.
+            You are BrainDump, a practical coach who turns messy thoughts into action. Turn the dump between <<< and >>> into ONE JSON object.
+            The dump can be about anything: personal life, habits, health, work, study, money, a creative project, or software.
+            Answer in the same domain as the dump. Only talk about apps or code when the dump is about building software.
             Rules:
             - Output ONLY the JSON object. No markdown, no code fences, no commentary.
-            - Use exactly these keys: "idea_title", "raw_concept", "tech_stack_anchors", "immediate_micro_tasks".
+            - Use exactly these keys: "idea_title", "category", "raw_concept", "tech_stack_anchors", "immediate_micro_tasks".
             - Every value is a plain string or a list of plain strings. Keep it short; stop right after the closing brace.
             - idea_title: at most 8 words, Title Case.
-            - raw_concept: 1 or 2 plain sentences saying what is being built and why.
-            - tech_stack_anchors: 1 to 5 short technology names that fit the idea.
-            - immediate_micro_tasks: EXACTLY 3 strings. Each is a concrete developer action under 15 words, starts with a verb, ordered by leverage.
-            Schema: {"idea_title":string,"raw_concept":string,"tech_stack_anchors":[string],"immediate_micro_tasks":[string,string,string]}
+            - category: exactly one of Personal, Work, Health, Learning, Money, Creative, Tech, Other.
+            - raw_concept: 1 or 2 plain sentences naming the real problem or goal and why it matters.
+            - tech_stack_anchors: 0 to 5 short tags for the tools, methods or technologies that fit, such as "Pomodoro" or "Google Calendar" for a life problem and "Kotlin" for an app. Use [] if nothing fits.
+            - immediate_micro_tasks: EXACTLY 3 strings. Each is a concrete action under 15 words that can be done today, starts with a verb, ordered by impact.
+            Schema: {"idea_title":string,"category":string,"raw_concept":string,"tech_stack_anchors":[string],"immediate_micro_tasks":[string,string,string]}
+            Example input: <<<i keep wasting my evenings on my phone and never get to the gym or reading, always tired and behind>>>
+            Example output: {"idea_title":"Reclaim My Evenings","category":"Personal","raw_concept":"Evenings disappear into phone scrolling, leaving no time or energy for exercise and reading.","tech_stack_anchors":["Time Blocking","Digital Wellbeing"],"immediate_micro_tasks":["Block 7 to 8 pm in the calendar for the gym","Set a 30 minute daily limit on social apps","Put a book on the pillow before leaving for work"]}
             Example input: <<<app that reminds me to drink water maybe with a widget idk and syncs to my watch>>>
-            Example output: {"idea_title":"Hydration Reminder Widget","raw_concept":"An Android app that nudges the user to drink water from a home screen widget and mirrors reminders on a smartwatch.","tech_stack_anchors":["Kotlin","Jetpack Glance","WorkManager","Wear OS"],"immediate_micro_tasks":["Scaffold a Compose app with a Room table for intake logs","Build a Glance widget that logs one glass per tap","Schedule hourly reminders with WorkManager"]}
+            Example output: {"idea_title":"Hydration Reminder Widget","category":"Tech","raw_concept":"An Android app that nudges the user to drink water from a home screen widget and mirrors reminders on a smartwatch.","tech_stack_anchors":["Kotlin","Jetpack Glance","WorkManager","Wear OS"],"immediate_micro_tasks":["Scaffold a Compose app with a Room table for intake logs","Build a Glance widget that logs one glass per tap","Schedule hourly reminders with WorkManager"]}
         """.trimIndent()
 
         const val STRICT_SUFFIX =
