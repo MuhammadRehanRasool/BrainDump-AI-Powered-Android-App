@@ -181,8 +181,7 @@ class IdeaRepositoryImpl @Inject constructor(
             val words = { text: String -> text.split(WHITESPACE).count { it.isNotBlank() } }
             changes += "Rewrote the note (${words(before.body)} → ${words(after.body)} words)"
         }
-        return changes.joinToString("
-").ifEmpty { "Nothing changed. Try naming exactly what to change." }
+        return changes.joinToString("\n").ifEmpty { "Nothing changed. Try naming exactly what to change." }
     }
 
     private companion object {
