@@ -174,18 +174,20 @@ fun SettingsScreen(
 
                 item(key = "model") {
                     Section(R.string.settings_section_model) {
-                        SettingRow(
-                            title = stringResource(R.string.dashboard_use_preview),
-                            subtitle = stringResource(R.string.settings_use_preview_body),
-                            onClick = { onUsePreviewModelChange(!usePreviewModel) },
-                            trailing = { Switch(checked = usePreviewModel, onCheckedChange = null) },
-                        )
-                        Text(
-                            text = stringResource(R.string.settings_model_specs),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
-                        )
+                        Column {
+                            SettingRow(
+                                title = stringResource(R.string.dashboard_use_preview),
+                                subtitle = stringResource(R.string.settings_use_preview_body),
+                                onClick = { onUsePreviewModelChange(!usePreviewModel) },
+                                trailing = { Switch(checked = usePreviewModel, onCheckedChange = null) },
+                            )
+                            Text(
+                                text = stringResource(R.string.settings_model_specs),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                            )
+                        }
                     }
                 }
 
