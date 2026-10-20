@@ -179,8 +179,13 @@ class IdeaRepositoryImpl @Inject constructor(
         val samples = dao.recentStyleSamples(limit = STYLE_SAMPLE_LIMIT, excludeId = excludeIdeaId)
         if (samples.isEmpty()) return ""
         val profile = buildString {
-            append("Use this recent writing fingerprint to align style (tone, mood, creativity, emotionality).")
-            append(" Keep only style patterns and never copy personal facts.\n")
+            append("Writing identity profile (360 style-only): infer the user's preferred patterns and align to them.")
+            append(" Use this only for style; never copy personal facts.\n")
+            append("Identity aspects to align:\n")
+            IDENTITY_ASPECTS.forEachIndexed { index, aspect ->
+                append("- ").append(index + 1).append(". ").append(aspect).append('\n')
+            }
+            append("Recent notes to infer identity from:\n")
             var index = 1
             for (sample in samples) {
                 val excerpt = sample.body.replace(WHITESPACE, " ").trim().take(STYLE_EXCERPT_CHARS)
@@ -219,6 +224,18 @@ class IdeaRepositoryImpl @Inject constructor(
         const val STYLE_SAMPLE_LIMIT = 4
         const val STYLE_EXCERPT_CHARS = 220
         const val STYLE_PROFILE_MAX_CHARS = 1_200
+        val IDENTITY_ASPECTS = listOf(
+            "Voice and persona",
+            "Tone and attitude",
+            "Mood and atmosphere",
+            "Emotional intensity and vulnerability",
+            "Creativity and imagination",
+            "Formality level",
+            "Structure and organization",
+            "Detail density",
+            "Directness and assertiveness",
+            "Reflection versus action orientation",
+        )
         val WHITESPACE = Regex("""\s+""")
     }
 }
