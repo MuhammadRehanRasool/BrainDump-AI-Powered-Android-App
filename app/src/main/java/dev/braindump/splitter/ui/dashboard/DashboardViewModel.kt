@@ -33,7 +33,6 @@ data class DaySection(
 data class DashboardUiState(
     val sections: List<DaySection> = emptyList(),
     val aiStatus: AiStatus = AiStatus.Unknown,
-    val usePreviewModel: Boolean = false,
     val refine: RefineState = RefineState(),
     val isLoading: Boolean = true,
 )
@@ -57,13 +56,11 @@ class DashboardViewModel @Inject constructor(
     val uiState: StateFlow<DashboardUiState> = combine(
         repository.observeIdeas().map(::groupByDay).flowOn(Dispatchers.Default),
         repository.aiStatus,
-        repository.usePreviewModel,
         refining,
-    ) { sections, aiStatus, usePreviewModel, refineState ->
+    ) { sections, aiStatus, refineState ->
         DashboardUiState(
             sections = sections,
             aiStatus = aiStatus,
-            usePreviewModel = usePreviewModel,
             refine = refineState,
             isLoading = false,
         )
@@ -88,10 +85,6 @@ class DashboardViewModel @Inject constructor(
         refining.update { if (it.pendingAsk == null) RefineState() else it }
     }
 
-    fun setUsePreviewModel(enabled: Boolean) {
-        appScope.launch { repository.setUsePreviewModel(enabled) }
-    }
-
     /** Gemini Nano only serves foreground apps, so this is where the queue gets drained. */
     fun onForeground() {
         viewModelScope.launch {
@@ -100,12 +93,8 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    fun capture(text: String) {
-        appScope.launch { repository.captureAndSplit(text) }
-    }
-
-    fun toggleTask(ideaId: Long, taskIndex: Int) {
-        appScope.launch { repository.toggleTask(ideaId, taskIndex) }
+    fun capture(text: String, image: android.graphics.Bitmap?) {
+        appScope.launch { repository.captureAndSplit(text, image) }
     }
 
     fun retry(ideaId: Long) {
@@ -119,27 +108,28 @@ class DashboardViewModel @Inject constructor(
     fun delete(ideaId: Long) {
         appScope.launch { repository.delete(ideaId) }
     }
-
-    private fun groupByDay(ideas: List<Idea>): List<DaySection> {
-        if (ideas.isEmpty()) return emptyList()
-        val zone = ZoneId.systemDefault()
-        val sections = ArrayList<DaySection>()
-        var currentDay = Long.MIN_VALUE
-        var bucket = ArrayList<Idea>()
-
-        // Ideas arrive newest first, so each day is one contiguous run.
-        for (idea in ideas) {
-            val day = Instant.ofEpochMilli(idea.createdAt).atZone(zone).toLocalDate().toEpochDay()
-            if (day != currentDay) {
-                if (bucket.isNotEmpty()) sections += DaySection(currentDay, bucket)
-                currentDay = day
-                bucket = ArrayList()
-            }
-            bucket += idea
-        }
-        if (bucket.isNotEmpty()) sections += DaySection(currentDay, bucket)
-        return sections
-    }
 }
 
 internal fun todayEpochDay(): Long = LocalDate.now(ZoneId.systemDefault()).toEpochDay()
+
+/** Ideas grouped by local day, newest first. */
+internal fun groupByDay(ideas: List<Idea>): List<DaySection> {
+    if (ideas.isEmpty()) return emptyList()
+    val zone = ZoneId.systemDefault()
+    val sections = ArrayList<DaySection>()
+    var currentDay = Long.MIN_VALUE
+    var bucket = ArrayList<Idea>()
+
+    // Ideas arrive newest first, so each day is one contiguous run.
+    for (idea in ideas) {
+        val day = Instant.ofEpochMilli(idea.createdAt).atZone(zone).toLocalDate().toEpochDay()
+        if (day != currentDay) {
+            if (bucket.isNotEmpty()) sections += DaySection(currentDay, bucket)
+            currentDay = day
+            bucket = ArrayList()
+        }
+        bucket += idea
+    }
+    if (bucket.isNotEmpty()) sections += DaySection(currentDay, bucket)
+    return sections
+}

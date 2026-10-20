@@ -7,7 +7,6 @@ import androidx.room.PrimaryKey
 import dev.braindump.splitter.domain.model.Idea
 import dev.braindump.splitter.domain.model.IdeaCategory
 import dev.braindump.splitter.domain.model.IdeaStatus
-import dev.braindump.splitter.domain.model.MicroTask
 import dev.braindump.splitter.domain.model.RefineTurn
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -23,18 +22,12 @@ data class IdeaEntity(
     val rawInput: String,
     @ColumnInfo(name = "idea_title")
     val ideaTitle: String? = null,
-    @ColumnInfo(name = "raw_concept")
-    val rawConcept: String? = null,
-    @ColumnInfo(name = "tech_stack_anchors")
-    val techStackAnchors: List<String> = emptyList(),
-    @ColumnInfo(name = "immediate_micro_tasks")
-    val immediateMicroTasks: List<String> = emptyList(),
-    /** [IdeaCategory] name; null until the idea is split (or for ideas saved before categories existed). */
+    /** The polished note as Markdown, without its title; null until Gemini Nano has written it. */
+    @ColumnInfo(name = "body")
+    val body: String? = null,
+    /** [IdeaCategory] name; null until the idea is polished. */
     @ColumnInfo(name = "category")
     val category: String? = null,
-    /** Bit i set = micro task i checked off. */
-    @ColumnInfo(name = "completed_mask")
-    val completedMask: Int = 0,
     @ColumnInfo(name = "status")
     val status: IdeaStatus = IdeaStatus.PENDING,
     @ColumnInfo(name = "attempts")
@@ -62,11 +55,7 @@ fun IdeaEntity.toDomain(): Idea = Idea(
     id = id,
     rawInput = rawInput,
     title = ideaTitle.orEmpty(),
-    concept = rawConcept.orEmpty(),
-    techStack = techStackAnchors,
-    tasks = immediateMicroTasks.mapIndexed { index, text ->
-        MicroTask(index = index, text = text, done = (completedMask and (1 shl index)) != 0)
-    },
+    body = body.orEmpty(),
     category = IdeaCategory.parse(category),
     status = status,
     error = lastError,

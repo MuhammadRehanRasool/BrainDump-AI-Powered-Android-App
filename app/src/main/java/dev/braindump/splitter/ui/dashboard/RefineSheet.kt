@@ -68,8 +68,8 @@ import dev.braindump.splitter.ui.theme.AccentButton
 import dev.braindump.splitter.ui.theme.Glass
 
 /**
- * A chat about one idea: the idea sits on top and rewrites itself live as each request
- * ("make the tasks smaller", "add a step for X") is applied by Gemini Nano. The sheet keeps
+ * A chat about one idea: the note sits on top and rewrites itself live as each request
+ * ("make it shorter", "add a section on X") is applied by Gemini Nano. The sheet keeps
  * the app in the foreground, which Nano needs.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -78,7 +78,6 @@ fun RefineSheet(
     idea: Idea,
     state: RefineState,
     onSend: (String) -> Unit,
-    onToggleTask: (Long, Int) -> Unit,
     onClearError: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -149,7 +148,7 @@ fun RefineSheet(
                 contentPadding = PaddingValues(vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                item(key = "idea") { LiveIdea(idea, onToggleTask) }
+                item(key = "idea") { LiveIdea(idea) }
 
                 itemsIndexed(idea.refinements, key = { index, _ -> "turn-$index" }) { _, turn ->
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -224,7 +223,7 @@ fun RefineSheet(
 
 /** The idea as it stands right now; it resizes smoothly as Gemini Nano rewrites it. */
 @Composable
-private fun LiveIdea(idea: Idea, onToggleTask: (Long, Int) -> Unit) {
+private fun LiveIdea(idea: Idea) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -241,18 +240,7 @@ private fun LiveIdea(idea: Idea, onToggleTask: (Long, Int) -> Unit) {
             Text(title, style = MaterialTheme.typography.titleMedium)
         }
         CategoryTag(idea.category, Modifier.padding(top = 6.dp))
-        if (idea.concept.isNotBlank()) {
-            Text(
-                text = idea.concept,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
-            )
-        }
-        idea.tasks.forEach { task ->
-            TaskRow(task = task, onToggle = { onToggleTask(idea.id, task.index) })
-        }
-        if (idea.techStack.isNotEmpty()) TechAnchors(idea.techStack)
+        if (idea.body.isNotBlank()) MarkdownText(idea.body, Modifier.padding(top = 10.dp))
     }
 }
 
@@ -349,10 +337,10 @@ private fun ErrorBubble(message: String, onRetry: (() -> Unit)?) {
 private fun Suggestions(enabled: Boolean, onPick: (String) -> Unit) {
     val primary = MaterialTheme.colorScheme.primary
     val suggestions = listOf(
-        stringResource(R.string.refine_suggest_smaller),
-        stringResource(R.string.refine_suggest_next),
+        stringResource(R.string.refine_suggest_shorter),
+        stringResource(R.string.refine_suggest_detail),
+        stringResource(R.string.refine_suggest_steps),
         stringResource(R.string.refine_suggest_title),
-        stringResource(R.string.refine_suggest_split),
     )
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),

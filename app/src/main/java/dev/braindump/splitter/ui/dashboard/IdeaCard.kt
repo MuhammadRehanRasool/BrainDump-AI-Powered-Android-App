@@ -3,7 +3,6 @@ package dev.braindump.splitter.ui.dashboard
 import android.text.format.DateFormat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.animateFloatAsState
@@ -13,9 +12,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -25,10 +22,8 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -57,18 +52,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -76,7 +67,6 @@ import dev.braindump.splitter.R
 import dev.braindump.splitter.domain.model.Idea
 import dev.braindump.splitter.domain.model.IdeaCategory
 import dev.braindump.splitter.domain.model.IdeaStatus
-import dev.braindump.splitter.domain.model.MicroTask
 import dev.braindump.splitter.ui.theme.Glass
 import dev.braindump.splitter.ui.theme.GlassPanel
 import dev.braindump.splitter.ui.theme.rememberPressScale
@@ -85,7 +75,6 @@ import java.util.Date
 @Composable
 fun IdeaCard(
     idea: Idea,
-    onToggleTask: (Long, Int) -> Unit,
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
     onCategoryChange: (Long, IdeaCategory) -> Unit,
@@ -164,7 +153,22 @@ fun IdeaCard(
                 )
             }
 
-            if (idea.status == IdeaStatus.READY && idea.techStack.isNotEmpty()) TechAnchors(idea.techStack)
+            // Collapsed, a ready note shows its opening line; expanded, the whole note.
+            val preview = remember(idea.body) { markdownPreview(idea.body) }
+            AnimatedVisibility(
+                visible = !expanded && idea.status == IdeaStatus.READY && preview.isNotEmpty(),
+                enter = fadeIn(tween(200)),
+                exit = fadeOut(tween(100)),
+            ) {
+                Text(
+                    text = preview,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
 
             AnimatedVisibility(
                 visible = expanded,
@@ -173,27 +177,27 @@ fun IdeaCard(
                 exit = shrinkVertically(spring(stiffness = Spring.StiffnessMedium, visibilityThreshold = IntSize.VisibilityThreshold)) +
                     fadeOut(tween(durationMillis = 120)),
             ) {
-                ExpandedDetails(idea, onToggleTask, onRetry, onDelete, onCategoryChange, onRefine)
+                ExpandedDetails(idea, onRetry, onDelete, onCategoryChange, onRefine)
             }
         }
     }
 }
 
-private enum class Badge { PROGRESS, SPLITTING, WAITING, FAILED }
+private enum class Badge { READY, SPLITTING, WAITING, FAILED }
 
 private fun badgeOf(idea: Idea): Badge = when (idea.status) {
-    IdeaStatus.READY -> Badge.PROGRESS
+    IdeaStatus.READY -> Badge.READY
     IdeaStatus.PENDING -> if (idea.error == null) Badge.SPLITTING else Badge.WAITING
     IdeaStatus.FAILED -> Badge.FAILED
 }
 
-/** Leading badge: a ring that fills as tasks get done, or the split state while there are none yet. */
+/** Leading badge: the category once the note is written, or the polishing state until then. */
 @Composable
 private fun StatusBadge(idea: Idea) {
     Crossfade(targetState = badgeOf(idea), animationSpec = tween(300), label = "badge") { badge ->
         Box(Modifier.size(BADGE_SIZE), contentAlignment = Alignment.Center) {
             when (badge) {
-                Badge.PROGRESS -> ProgressRing(done = idea.completedCount, total = idea.tasks.size)
+                Badge.READY -> CategoryBadge(idea.category)
                 Badge.SPLITTING -> CircularProgressIndicator(
                     strokeWidth = 3.dp,
                     strokeCap = StrokeCap.Round,
@@ -220,46 +224,15 @@ private fun BadgeIcon(icon: ImageVector, tint: Color) {
 }
 
 @Composable
-private fun ProgressRing(done: Int, total: Int) {
-    val glass = Glass.colors
-    val complete = total > 0 && done >= total
-    val progress by animateFloatAsState(
-        targetValue = if (total == 0) 0f else done.toFloat() / total,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
-        label = "progress",
-    )
-    val arcColor by animateColorAsState(
-        targetValue = if (complete) glass.success else MaterialTheme.colorScheme.primary,
-        label = "arc",
-    )
-    val track = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
-    Box(contentAlignment = Alignment.Center) {
-        Canvas(Modifier.size(BADGE_SIZE)) {
-            val stroke = 3.5.dp.toPx()
-            val inset = stroke / 2
-            val arcSize = Size(size.width - stroke, size.height - stroke)
-            drawArc(track, 0f, 360f, false, Offset(inset, inset), arcSize, style = Stroke(stroke))
-            drawArc(
-                color = arcColor,
-                startAngle = -90f,
-                sweepAngle = 360f * progress,
-                useCenter = false,
-                topLeft = Offset(inset, inset),
-                size = arcSize,
-                style = Stroke(stroke, cap = StrokeCap.Round),
-            )
-        }
-        Crossfade(targetState = complete, label = "complete") { isComplete ->
-            if (isComplete) {
-                Icon(Icons.Filled.Check, contentDescription = null, tint = glass.success, modifier = Modifier.size(20.dp))
-            } else {
-                Text(
-                    text = stringResource(R.string.idea_progress, done, total),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+private fun CategoryBadge(category: IdeaCategory) {
+    Box(
+        modifier = Modifier
+            .size(BADGE_SIZE)
+            .clip(CircleShape)
+            .background(category.color.copy(alpha = 0.18f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(category.emoji, style = MaterialTheme.typography.titleMedium)
     }
 }
 
@@ -276,32 +249,8 @@ private fun statusLine(idea: Idea, time: String): String = when (idea.status) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun TechAnchors(anchors: List<String>) {
-    val primary = MaterialTheme.colorScheme.primary
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-        modifier = Modifier.padding(top = 12.dp),
-    ) {
-        anchors.forEach { anchor ->
-            Text(
-                text = anchor,
-                style = MaterialTheme.typography.labelMedium,
-                color = primary,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(primary.copy(alpha = 0.1f))
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
 private fun ExpandedDetails(
     idea: Idea,
-    onToggleTask: (Long, Int) -> Unit,
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
     onCategoryChange: (Long, IdeaCategory) -> Unit,
@@ -313,36 +262,30 @@ private fun ExpandedDetails(
     Column(Modifier.padding(top = 12.dp)) {
         if (idea.status == IdeaStatus.READY) {
             CategoryPicker(idea.category, onPick = { onCategoryChange(idea.id, it) })
-            if (idea.concept.isNotBlank()) {
-                Text(
-                    text = idea.concept,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 6.dp),
-                )
-            }
-            idea.tasks.forEach { task ->
-                TaskRow(task = task, onToggle = { onToggleTask(idea.id, task.index) })
-            }
+            if (idea.body.isNotBlank()) MarkdownText(idea.body, Modifier.padding(bottom = 6.dp))
+            var dumpOpen by rememberSaveable(idea.id) { mutableStateOf(false) }
             Column(
                 Modifier
                     .padding(top = 8.dp)
                     .fillMaxWidth()
                     .clip(MaterialTheme.shapes.medium)
                     .background(glass.inset)
+                    .clickable { dumpOpen = !dumpOpen }
                     .padding(12.dp),
             ) {
                 Text(
-                    text = stringResource(R.string.idea_original),
+                    text = stringResource(if (dumpOpen) R.string.idea_original else R.string.idea_original_peek),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(
-                    text = idea.rawInput,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
+                AnimatedVisibility(visible = dumpOpen) {
+                    Text(
+                        text = idea.rawInput,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
             }
         }
 
@@ -489,66 +432,6 @@ private fun ActionPill(icon: ImageVector, label: String, tint: Color, onClick: (
     ) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
         Text(label, style = MaterialTheme.typography.labelLarge, color = tint)
-    }
-}
-
-@Composable
-internal fun TaskRow(task: MicroTask, onToggle: () -> Unit) {
-    val primary = MaterialTheme.colorScheme.primary
-    val fill by animateColorAsState(
-        targetValue = if (task.done) primary else Color.Transparent,
-        animationSpec = tween(180),
-        label = "fill",
-    )
-    val edge by animateColorAsState(
-        targetValue = if (task.done) primary else MaterialTheme.colorScheme.outline,
-        animationSpec = tween(180),
-        label = "edge",
-    )
-    val checkScale by animateFloatAsState(
-        targetValue = if (task.done) 1f else 0f,
-        animationSpec = spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMedium),
-        label = "check",
-    )
-    val textAlpha by animateFloatAsState(if (task.done) 0.5f else 1f, tween(200), label = "text")
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .clip(MaterialTheme.shapes.medium)
-            .toggleable(value = task.done, role = Role.Checkbox, onValueChange = { onToggle() })
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(24.dp)
-                .clip(CircleShape)
-                .background(fill)
-                .border(2.dp, edge, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Check,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier
-                    .size(16.dp)
-                    .graphicsLayer {
-                        scaleX = checkScale
-                        scaleY = checkScale
-                    },
-            )
-        }
-        Text(
-            text = task.text,
-            style = MaterialTheme.typography.bodyMedium,
-            textDecoration = if (task.done) TextDecoration.LineThrough else null,
-            modifier = Modifier
-                .padding(start = 12.dp)
-                .graphicsLayer { alpha = textAlpha },
-        )
     }
 }
 

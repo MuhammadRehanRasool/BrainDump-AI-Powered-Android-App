@@ -2,7 +2,7 @@ package dev.braindump.splitter.data.repository
 
 import dev.braindump.splitter.data.ai.AICoreManager
 import dev.braindump.splitter.data.ai.AiSettings
-import dev.braindump.splitter.data.ai.IdeaBreakdown
+import dev.braindump.splitter.data.ai.IdeaNote
 import dev.braindump.splitter.data.ai.SplitException
 import dev.braindump.splitter.data.local.IdeaDao
 import dev.braindump.splitter.data.local.IdeaEntity
@@ -34,16 +34,20 @@ class IdeaRepositoryImpl @Inject constructor(
     // One drain at a time; a caller that waits here sees everything queued before it.
     private val drainMutex = Mutex()
 
+    // Photos live in memory only until their note is written, then they're dropped.
+    private val pendingImages = java.util.concurrent.ConcurrentHashMap<Long, android.graphics.Bitmap>()
+
     override val aiStatus: StateFlow<AiStatus> get() = ai.status
 
     override fun observeIdeas(): Flow<List<Idea>> =
         dao.observeAll().map { entities -> entities.map(IdeaEntity::toDomain) }
 
-    override suspend fun captureAndSplit(rawInput: String): CaptureOutcome {
-        val text = rawInput.trim()
+    override suspend fun captureAndSplit(rawInput: String, image: android.graphics.Bitmap?): CaptureOutcome {
+        val text = rawInput.trim().ifEmpty { if (image != null) PHOTO_ONLY else "" }
         if (text.isEmpty()) return CaptureOutcome.Empty
         val now = System.currentTimeMillis()
         val id = dao.insert(IdeaEntity(rawInput = text, createdAt = now, updatedAt = now))
+        image?.let { pendingImages[id] = it }
 
         splitPending()
 
@@ -55,11 +59,6 @@ class IdeaRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun toggleTask(ideaId: Long, taskIndex: Int) {
-        if (taskIndex !in 0 until Int.SIZE_BITS - 1) return
-        dao.toggleTaskBit(ideaId, 1 shl taskIndex, System.currentTimeMillis())
-    }
-
     override suspend fun retry(ideaId: Long) {
         if (dao.resetFailed(ideaId, System.currentTimeMillis()) > 0) splitPending()
     }
@@ -68,26 +67,24 @@ class IdeaRepositoryImpl @Inject constructor(
         val request = ask.trim()
         if (request.isEmpty()) return RefineOutcome.Failed("Say what to change")
         val idea = dao.getById(ideaId) ?: return RefineOutcome.Failed(DELETED)
-        if (idea.status != IdeaStatus.READY) return RefineOutcome.Failed("Wait until the idea is split")
+        if (idea.status != IdeaStatus.READY) return RefineOutcome.Failed("Wait until the note is written")
 
+        val before = idea.toNote()
         val refined = try {
-            ai.refineIdea(idea.toBreakdown(), idea.rawInput, request)
+            ai.refineIdea(before, idea.rawInput, request)
         } catch (e: SplitException) {
             return RefineOutcome.Failed(e.message ?: "Gemini Nano couldn't refine this")
         }
 
-        // Re-read: tasks may have been ticked off while Gemini Nano was thinking.
+        // Re-read: the category may have been changed while Gemini Nano was thinking.
         val latest = dao.getById(ideaId) ?: return RefineOutcome.Failed(DELETED)
-        val summary = describeChanges(latest.toBreakdown(), refined)
+        val summary = describeChanges(before, refined)
         val now = System.currentTimeMillis()
         dao.update(
             latest.copy(
-                ideaTitle = refined.ideaTitle,
-                rawConcept = refined.rawConcept,
-                techStackAnchors = refined.techStackAnchors,
-                immediateMicroTasks = refined.immediateMicroTasks,
+                ideaTitle = refined.title,
+                body = refined.body,
                 category = refined.category.name,
-                completedMask = carryOverDone(latest, refined.immediateMicroTasks),
                 updatedAt = now,
             ).withTurn(RefineTurn(ask = request, reply = summary, at = now))
         )
@@ -134,15 +131,13 @@ class IdeaRepositoryImpl @Inject constructor(
                 if (idea.status != IdeaStatus.PENDING) continue
 
                 try {
-                    val breakdown = ai.splitIdea(idea.rawInput)
+                    val note = ai.polishIdea(idea.rawInput, pendingImages[id])
+                    pendingImages.remove(id)
                     dao.update(
                         idea.copy(
-                            ideaTitle = breakdown.ideaTitle,
-                            rawConcept = breakdown.rawConcept,
-                            techStackAnchors = breakdown.techStackAnchors,
-                            immediateMicroTasks = breakdown.immediateMicroTasks,
-                            category = breakdown.category.name,
-                            completedMask = 0,
+                            ideaTitle = note.title,
+                            body = note.body,
+                            category = note.category.name,
                             status = IdeaStatus.READY,
                             lastError = null,
                             updatedAt = System.currentTimeMillis(),
@@ -155,6 +150,7 @@ class IdeaRepositoryImpl @Inject constructor(
                 } catch (e: SplitException) {
                     val attempts = idea.attempts + 1
                     val giveUp = !e.retryable || attempts >= MAX_ATTEMPTS
+                    if (giveUp) pendingImages.remove(id)
                     dao.update(
                         idea.copy(
                             status = if (giveUp) IdeaStatus.FAILED else IdeaStatus.PENDING,
@@ -168,50 +164,31 @@ class IdeaRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun IdeaEntity.toBreakdown() = IdeaBreakdown(
-        ideaTitle = ideaTitle.orEmpty(),
-        rawConcept = rawConcept.orEmpty(),
-        techStackAnchors = techStackAnchors,
-        immediateMicroTasks = immediateMicroTasks,
+    private fun IdeaEntity.toNote() = IdeaNote(
+        title = ideaTitle.orEmpty(),
+        body = body.orEmpty(),
         category = IdeaCategory.parse(category),
     )
 
-    /** A task keeps its tick when the refined list still has it, wherever it moved to. */
-    private fun carryOverDone(idea: IdeaEntity, tasks: List<String>): Int {
-        val done = idea.immediateMicroTasks
-            .filterIndexed { index, _ -> (idea.completedMask and (1 shl index)) != 0 }
-            .mapTo(HashSet()) { it.lowercase() }
-        var mask = 0
-        tasks.forEachIndexed { index, task -> if (task.lowercase() in done) mask = mask or (1 shl index) }
-        return mask
-    }
-
-    /** The chat reply: what actually changed, read off the data rather than the model's word for it. */
-    private fun describeChanges(before: IdeaBreakdown, after: IdeaBreakdown): String {
+    /** The chat reply: what actually changed, read off the note rather than the model's word for it. */
+    private fun describeChanges(before: IdeaNote, after: IdeaNote): String {
         val changes = ArrayList<String>()
-        if (before.ideaTitle != after.ideaTitle) changes += "Renamed to “${after.ideaTitle}”"
+        if (before.title != after.title) changes += "Renamed to “${after.title}”"
         if (before.category != after.category) {
             changes += "Moved to ${after.category.name.lowercase().replaceFirstChar { it.titlecase() }}"
         }
-        if (before.rawConcept != after.rawConcept) changes += "Updated the summary"
-
-        val oldTasks = before.immediateMicroTasks.map { it.lowercase() }.toSet()
-        val newTasks = after.immediateMicroTasks.map { it.lowercase() }.toSet()
-        val added = after.immediateMicroTasks.filter { it.lowercase() !in oldTasks }
-        val removed = before.immediateMicroTasks.filter { it.lowercase() !in newTasks }
-        added.forEach { changes += "+ $it" }
-        removed.forEach { changes += "− $it" }
-        if (added.isEmpty() && removed.isEmpty() && before.immediateMicroTasks != after.immediateMicroTasks) {
-            changes += "Reordered the tasks"
+        if (before.body != after.body) {
+            val words = { text: String -> text.split(WHITESPACE).count { it.isNotBlank() } }
+            changes += "Rewrote the note (${words(before.body)} → ${words(after.body)} words)"
         }
-        if (before.techStackAnchors != after.techStackAnchors) {
-            changes += if (after.techStackAnchors.isEmpty()) "Cleared the tags" else "Tags: ${after.techStackAnchors.joinToString(", ")}"
-        }
-        return changes.joinToString("\n").ifEmpty { "Nothing changed. Try naming exactly what to change." }
+        return changes.joinToString("
+").ifEmpty { "Nothing changed. Try naming exactly what to change." }
     }
 
     private companion object {
+        const val PHOTO_ONLY = "📸 pic dump"
         const val MAX_ATTEMPTS = 3
         const val DELETED = "This idea was deleted"
+        val WHITESPACE = Regex("""\s+""")
     }
 }

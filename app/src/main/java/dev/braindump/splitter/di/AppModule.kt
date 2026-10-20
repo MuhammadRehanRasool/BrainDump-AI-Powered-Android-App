@@ -15,7 +15,6 @@ import dev.braindump.splitter.domain.repository.IdeaRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.serialization.json.Json
 import javax.inject.Qualifier
 import javax.inject.Singleton
 
@@ -32,20 +31,15 @@ object AppModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): BrainDumpDatabase =
         Room.databaseBuilder(context, BrainDumpDatabase::class.java, BrainDumpDatabase.NAME)
-            .addMigrations(BrainDumpDatabase.MIGRATION_1_2, BrainDumpDatabase.MIGRATION_2_3)
+            .addMigrations(
+                BrainDumpDatabase.MIGRATION_1_2,
+                BrainDumpDatabase.MIGRATION_2_3,
+                BrainDumpDatabase.MIGRATION_3_4,
+            )
             .build()
 
     @Provides
     fun provideIdeaDao(database: BrainDumpDatabase): IdeaDao = database.ideaDao()
-
-    @Provides
-    @Singleton
-    fun provideJson(): Json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-        coerceInputValues = true
-        explicitNulls = false
-    }
 
     @Provides
     @Singleton

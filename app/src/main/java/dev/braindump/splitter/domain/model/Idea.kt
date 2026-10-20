@@ -6,9 +6,8 @@ data class Idea(
     val id: Long,
     val rawInput: String,
     val title: String,
-    val concept: String,
-    val techStack: List<String>,
-    val tasks: List<MicroTask>,
+    /** The polished note as Markdown, without its title line. */
+    val body: String,
     val category: IdeaCategory,
     val status: IdeaStatus,
     val error: String?,
@@ -16,17 +15,9 @@ data class Idea(
     /** The refine conversation, oldest first. */
     val refinements: List<RefineTurn> = emptyList(),
 ) {
-    val completedCount: Int get() = tasks.count { it.done }
-
     /** What to call the idea before Gemini Nano has titled it. */
     val displayTitle: String get() = title.ifBlank { rawInput }
 }
-
-data class MicroTask(
-    val index: Int,
-    val text: String,
-    val done: Boolean,
-)
 
 /** One exchange in an idea's refine chat: what the user asked and what changed. */
 @Serializable
@@ -38,7 +29,7 @@ data class RefineTurn(
 
 enum class IdeaStatus { PENDING, READY, FAILED }
 
-/** A fixed set, so ideas can be filtered and colored consistently. Gemini Nano picks one per split. */
+/** A fixed set, so ideas can be filtered and colored consistently. Gemini Nano picks one per note. */
 enum class IdeaCategory {
     PERSONAL, WORK, HEALTH, LEARNING, MONEY, CREATIVE, TECH, OTHER;
 

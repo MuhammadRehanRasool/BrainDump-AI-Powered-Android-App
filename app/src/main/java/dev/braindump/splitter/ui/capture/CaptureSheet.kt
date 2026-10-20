@@ -1,9 +1,12 @@
 package dev.braindump.splitter.ui.capture
 
 import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.ImageDecoder
 import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -20,6 +23,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -40,9 +44,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -68,6 +76,8 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -95,7 +105,7 @@ fun CaptureSheet(
     startWithVoice: Boolean,
     splitting: Boolean,
     hideOnSubmit: Boolean,
-    onSubmit: (String) -> Unit,
+    onSubmit: (String, Bitmap?) -> Unit,
     onDismiss: () -> Unit,
     close: Boolean = false,
     overApps: Boolean = false,
@@ -107,6 +117,8 @@ fun CaptureSheet(
     val glass = Glass.colors
     var text by rememberSaveable { mutableStateOf("") }
     var voiceAutoStarted by rememberSaveable { mutableStateOf(false) }
+    // Deliberately not saveable: the pic never leaves memory and dies with the sheet.
+    var image by remember { mutableStateOf<Bitmap?>(null) }
 
     val toggleVoice = rememberVoiceToggle(transcriber) { spoken ->
         text = if (text.isBlank()) spoken else "${text.trimEnd()} $spoken"
@@ -115,11 +127,12 @@ fun CaptureSheet(
     val submit: () -> Unit = {
         // Splitting mid-dictation keeps the phrase still being spoken.
         val idea = shownText().trim()
-        if (idea.isNotEmpty()) {
+        if (idea.isNotEmpty() || image != null) {
             if (transcriber.isListening) transcriber.release()
-            onSubmit(idea)
+            onSubmit(idea, image)
             if (hideOnSubmit) {
                 text = ""
+                image = null
                 scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() }
             }
         }
@@ -184,6 +197,34 @@ fun CaptureSheet(
                     .focusRequester(focusRequester),
             )
 
+            image?.let { pic ->
+                Box {
+                    Image(
+                        bitmap = pic.asImageBitmap(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(88.dp)
+                            .clip(RoundedCornerShape(16.dp)),
+                    )
+                    IconButton(
+                        onClick = { image = null },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.5f)),
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = stringResource(R.string.capture_remove_image),
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+            }
+
             AnimatedContent(
                 targetState = splitting,
                 transitionSpec = {
@@ -197,6 +238,7 @@ fun CaptureSheet(
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         MicButton(listening = listening, level = { transcriber.level }, onClick = toggleVoice)
+                        if (!listening) AttachButton(onPicked = { image = it })
                         AnimatedVisibility(visible = listening, enter = fadeIn(), exit = fadeOut()) {
                             Text(
                                 text = stringResource(R.string.capture_listening),
@@ -206,7 +248,7 @@ fun CaptureSheet(
                             )
                         }
                         Spacer(Modifier.weight(1f))
-                        AccentButton(onClick = submit, enabled = shown.isNotBlank()) {
+                        AccentButton(onClick = submit, enabled = shown.isNotBlank() || image != null) {
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
                             Text(stringResource(R.string.capture_submit), style = MaterialTheme.typography.labelLarge)
@@ -381,3 +423,52 @@ private fun SplittingIndicator() {
         )
     }
 }
+
+/** Plus-a-pic: snap one (in-memory preview, no file) or pull one from the gallery, downscaled. */
+@Composable
+private fun AttachButton(onPicked: (Bitmap) -> Unit) {
+    val context = LocalContext.current
+    var menu by remember { mutableStateOf(false) }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        bitmap?.let(onPicked)
+    }
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, info, _ ->
+                val scale = maxOf(info.size.width, info.size.height) / MAX_IMAGE_SIDE
+                if (scale > 1) decoder.setTargetSampleSize(scale)
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+        }.onSuccess(onPicked).onFailure {
+            Toast.makeText(context, R.string.capture_image_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
+    Box {
+        IconButton(onClick = { menu = true }) {
+            Icon(
+                Icons.Filled.Add,
+                contentDescription = stringResource(R.string.capture_attach),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.capture_camera)) },
+                onClick = {
+                    menu = false
+                    camera.launch(null)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.capture_gallery)) },
+                onClick = {
+                    menu = false
+                    gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+            )
+        }
+    }
+}
+
+private const val MAX_IMAGE_SIDE = 1024

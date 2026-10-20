@@ -1,14 +1,14 @@
 # dumpd
 
-**BrainDump Task Splitter.** Dump a messy idea by voice or text in one tap. Gemini Nano, the copy that's already on your phone, splits it into a title, a concept, tech anchors and exactly 3 micro tasks. The app has no INTERNET permission.
+**BrainDump.** Dump rough thoughts by voice or text in one tap. Gemini Nano, the copy that's already on your phone, rewrites them as a clear, polished Markdown note with a title and a category. The app has no INTERNET permission.
 
 ## How it flows
 
 1. **Capture.** Use the Quick Settings tile, the home-screen widget (resizes from a single mic button up to a 2x2 card), a launcher shortcut (long-press the icon), or the Dump and mic buttons. Voice runs through the phone's on-device speech recognizer and fills the text box live.
-2. **Split.** The idea goes into Room, then straight to Gemini Nano via the ML Kit GenAI Prompt API while the sheet is still open. That usually takes a second or two. Then the sheet closes and a toast shows the title. If the active Nano build can't produce valid JSON, the other builds AICore has installed are tried, and the one that works is used from then on.
-3. **Act.** The dashboard groups ideas by day. Tap a card to see its 3 checkboxes, or share it as a plain-text checklist.
+2. **Polish.** The dump goes into Room, then straight to Gemini Nano via the ML Kit GenAI Prompt API while the sheet is still open. Then the sheet closes and a toast shows the title. If the active Nano build returns nothing, the other builds AICore has installed are tried, and the one that works is used from then on.
+3. **Read and refine.** The dashboard groups notes by day. Tap a card to read the whole note, chat with Gemini Nano to change it, or share it as Markdown. Settings has export, shortcuts, and every prompt and limit the model runs with.
 
-Gemini Nano only answers apps in the foreground. If you swipe the sheet away mid-split, or the model isn't ready, the idea is kept and split the next time you open the app. Failed ideas get a Retry button.
+Gemini Nano only answers apps in the foreground. If you swipe the sheet away mid-polish, or the model isn't ready, the dump is kept and polished the next time you open the app. Failed ideas get a Retry button.
 
 ## Device requirements
 

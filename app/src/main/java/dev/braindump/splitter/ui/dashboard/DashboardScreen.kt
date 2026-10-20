@@ -1,14 +1,5 @@
 package dev.braindump.splitter.ui.dashboard
 
-import android.app.StatusBarManager
-import android.content.ComponentName
-import android.content.Context
-import android.graphics.drawable.Icon
-import android.os.Build
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.RequiresApi
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -46,14 +37,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Done
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -65,8 +50,6 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -76,14 +59,12 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -91,9 +72,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.braindump.splitter.R
 import dev.braindump.splitter.domain.model.AiStatus
 import dev.braindump.splitter.domain.model.IdeaCategory
-import dev.braindump.splitter.tile.BrainDumpTileService
 import dev.braindump.splitter.ui.capture.CaptureSheet
-import dev.braindump.splitter.ui.capture.QuickShortcuts
 import dev.braindump.splitter.ui.theme.AccentButton
 import dev.braindump.splitter.ui.theme.Glass
 import dev.braindump.splitter.ui.theme.GlassBackdrop
@@ -103,10 +82,9 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
-import kotlinx.coroutines.launch
 
 @Composable
-fun DashboardRoute(viewModel: DashboardViewModel = hiltViewModel()) {
+fun DashboardRoute(onOpenSettings: () -> Unit, viewModel: DashboardViewModel = hiltViewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     LifecycleEventEffect(Lifecycle.Event.ON_START) {
@@ -116,27 +94,25 @@ fun DashboardRoute(viewModel: DashboardViewModel = hiltViewModel()) {
     DashboardScreen(
         state = state,
         onCapture = viewModel::capture,
-        onToggleTask = viewModel::toggleTask,
         onRetry = viewModel::retry,
         onDelete = viewModel::delete,
         onCategoryChange = viewModel::setCategory,
         onRefine = viewModel::refine,
         onClearRefineError = viewModel::clearRefineError,
-        onUsePreviewModelChange = viewModel::setUsePreviewModel,
+        onOpenSettings = onOpenSettings,
     )
 }
 
 @Composable
 fun DashboardScreen(
     state: DashboardUiState,
-    onCapture: (String) -> Unit,
-    onToggleTask: (Long, Int) -> Unit,
+    onCapture: (String, android.graphics.Bitmap?) -> Unit,
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
     onCategoryChange: (Long, IdeaCategory) -> Unit,
     onRefine: (Long, String) -> Unit,
     onClearRefineError: () -> Unit,
-    onUsePreviewModelChange: (Boolean) -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     // Null while closed; otherwise whether the sheet starts dictating.
     var captureWithVoice by rememberSaveable { mutableStateOf<Boolean?>(null) }
@@ -156,26 +132,6 @@ fun DashboardScreen(
     val sections = remember(state.sections, activeFilter) { filterSections(state.sections, activeFilter) }
     val months = remember(sections) { summarizeMonths(sections) }
     val years = remember(months) { summarizeYears(months) }
-
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val allSections by rememberUpdatedState(state.sections)
-    val saveExportFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/markdown")) { uri ->
-        if (uri != null) {
-            scope.launch {
-                val saved = saveExport(context, uri, exportMarkdown(context, allSections))
-                Toast.makeText(context, if (saved) R.string.export_saved else R.string.export_failed, Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-    // Export ignores the category filter: "all" means all.
-    val onSaveAll = { saveExportFile.launch(exportFileName()) }
-    val onShareAll = {
-        if (!shareExport(context, exportMarkdown(context, state.sections))) {
-            Toast.makeText(context, R.string.export_too_big, Toast.LENGTH_LONG).show()
-            saveExportFile.launch(exportFileName())
-        }
-    }
 
     val listState = rememberLazyListState()
     val monthsState = rememberLazyGridState()
@@ -201,11 +157,7 @@ fun DashboardScreen(
                 TopBar(
                     aiStatus = state.aiStatus,
                     scrolled = scrolled,
-                    usePreviewModel = state.usePreviewModel,
-                    onUsePreviewModelChange = onUsePreviewModelChange,
-                    canExport = hasIdeas,
-                    onShareAll = onShareAll,
-                    onSaveAll = onSaveAll,
+                    onOpenSettings = onOpenSettings,
                 ) {
                     if (hasIdeas) {
                         TimelineSwitcher(
@@ -247,7 +199,6 @@ fun DashboardScreen(
                         scrollToMonth = monthTarget,
                         onScrollHandled = { monthTarget = null },
                         bottomPadding = bottomPadding,
-                        onToggleTask = onToggleTask,
                         onRetry = onRetry,
                         onDelete = onDelete,
                         onCategoryChange = onCategoryChange,
@@ -299,7 +250,6 @@ fun DashboardScreen(
                 idea = idea,
                 state = state.refine,
                 onSend = { ask -> onRefine(id, ask) },
-                onToggleTask = onToggleTask,
                 onClearError = onClearRefineError,
                 onDismiss = { refiningId = null },
             )
@@ -320,7 +270,6 @@ private fun DaysList(
     scrollToMonth: YearMonth?,
     onScrollHandled: () -> Unit,
     bottomPadding: Dp,
-    onToggleTask: (Long, Int) -> Unit,
     onRetry: (Long) -> Unit,
     onDelete: (Long) -> Unit,
     onCategoryChange: (Long, IdeaCategory) -> Unit,
@@ -377,7 +326,6 @@ private fun DaysList(
             ) { idea ->
                 IdeaCard(
                     idea = idea,
-                    onToggleTask = onToggleTask,
                     onRetry = onRetry,
                     onDelete = onDelete,
                     onCategoryChange = onCategoryChange,
@@ -399,11 +347,7 @@ private fun DaysList(
 private fun TopBar(
     aiStatus: AiStatus,
     scrolled: Boolean,
-    usePreviewModel: Boolean,
-    onUsePreviewModelChange: (Boolean) -> Unit,
-    canExport: Boolean,
-    onShareAll: () -> Unit,
-    onSaveAll: () -> Unit,
+    onOpenSettings: () -> Unit,
     controls: @Composable ColumnScope.() -> Unit,
 ) {
     val glass = Glass.colors
@@ -433,13 +377,9 @@ private fun TopBar(
                 Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
                 StatusChip(aiStatus, Modifier.padding(top = 6.dp))
             }
-            OverflowMenu(
-                usePreviewModel = usePreviewModel,
-                onUsePreviewModelChange = onUsePreviewModelChange,
-                canExport = canExport,
-                onShareAll = onShareAll,
-                onSaveAll = onSaveAll,
-            )
+            GlassIconButton(onClick = onOpenSettings, strong = false) {
+                Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.settings_title))
+            }
         }
         controls()
     }
@@ -672,96 +612,5 @@ private fun EmptyState(modifier: Modifier = Modifier) {
                 modifier = Modifier.padding(top = 8.dp),
             )
         }
-    }
-}
-
-@Composable
-private fun OverflowMenu(
-    usePreviewModel: Boolean,
-    onUsePreviewModelChange: (Boolean) -> Unit,
-    canExport: Boolean,
-    onShareAll: () -> Unit,
-    onSaveAll: () -> Unit,
-) {
-    val context = LocalContext.current
-    val canPin = remember(context) { ShortcutManagerCompat.isRequestPinShortcutSupported(context) }
-    val canAddTile = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-    var open by remember { mutableStateOf(false) }
-    Box {
-        GlassIconButton(onClick = { open = true }, strong = false) {
-            Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.dashboard_more))
-        }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            if (canExport) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.export_share)) },
-                    leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
-                    onClick = {
-                        open = false
-                        onShareAll()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.export_save)) },
-                    leadingIcon = { Icon(Icons.Filled.Done, contentDescription = null) },
-                    onClick = {
-                        open = false
-                        onSaveAll()
-                    },
-                )
-                HorizontalDivider()
-            }
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.dashboard_use_preview)) },
-                trailingIcon = { Checkbox(checked = usePreviewModel, onCheckedChange = null) },
-                onClick = {
-                    open = false
-                    onUsePreviewModelChange(!usePreviewModel)
-                },
-            )
-            if (canAddTile) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.dashboard_add_tile)) },
-                    onClick = {
-                        open = false
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) requestAddTile(context)
-                    },
-                )
-            }
-            if (canPin) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.dashboard_pin_voice)) },
-                    onClick = {
-                        open = false
-                        QuickShortcuts.pinToHomeScreen(context, voice = true)
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.dashboard_pin_type)) },
-                    onClick = {
-                        open = false
-                        QuickShortcuts.pinToHomeScreen(context, voice = false)
-                    },
-                )
-            }
-        }
-    }
-}
-
-@RequiresApi(Build.VERSION_CODES.TIRAMISU)
-private fun requestAddTile(context: Context) {
-    val statusBarManager = context.getSystemService(StatusBarManager::class.java) ?: return
-    statusBarManager.requestAddTileService(
-        ComponentName(context, BrainDumpTileService::class.java),
-        context.getString(R.string.tile_label),
-        Icon.createWithResource(context, R.drawable.ic_tile),
-        context.mainExecutor,
-    ) { result ->
-        val message = when (result) {
-            StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED -> R.string.dashboard_tile_added
-            StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED -> R.string.dashboard_tile_already_added
-            else -> R.string.dashboard_tile_not_added
-        }
-        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
     }
 }

@@ -31,11 +31,11 @@ class CaptureViewModel @Inject constructor(
      * Saves and splits while the sheet is still on screen, because Gemini Nano won't serve
      * a backgrounded app. Runs in the app scope, so dismissing the sheet never loses the idea.
      */
-    fun submit(text: String) {
-        if (text.isBlank() || _state.value != CaptureUiState.Editing) return
+    fun submit(text: String, image: android.graphics.Bitmap?) {
+        if ((text.isBlank() && image == null) || _state.value != CaptureUiState.Editing) return
         _state.value = CaptureUiState.Splitting
         appScope.launch {
-            _state.value = CaptureUiState.Finished(repository.captureAndSplit(text))
+            _state.value = CaptureUiState.Finished(repository.captureAndSplit(text, image))
         }
     }
 }

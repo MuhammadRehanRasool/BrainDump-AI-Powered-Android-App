@@ -10,7 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
-/** Opens the system share sheet with the idea as plain text, ready for notes, chats or issues. */
+/** Opens the system share sheet with the note as Markdown, ready for notes, chats or issues. */
 internal fun shareIdea(context: Context, idea: Idea) {
     val send = Intent(Intent.ACTION_SEND)
         .setType("text/plain")
@@ -22,30 +22,28 @@ internal fun shareIdea(context: Context, idea: Idea) {
 internal fun ideaShareText(idea: Idea): String {
     if (idea.status != IdeaStatus.READY) return idea.rawInput
     return buildString {
-        appendLine(idea.title)
-        if (idea.concept.isNotBlank()) {
+        appendLine("# ${idea.title}")
+        if (idea.body.isNotBlank()) {
             appendLine()
-            appendLine(idea.concept)
-        }
-        appendLine()
-        idea.tasks.forEach { task -> appendLine("${if (task.done) "☑" else "☐"} ${task.text}") }
-        if (idea.techStack.isNotEmpty()) {
-            appendLine()
-            appendLine(idea.techStack.joinToString(" · "))
+            appendLine(idea.body)
         }
     }.trimEnd()
 }
 
 /**
- * Every idea as compact Markdown, one heading per day, newest first:
+ * Every idea as Markdown, one heading per day, newest first. Headings inside a note are
+ * pushed down a few levels so they stay under the note's own title:
  *
  * ```
  * ## 2026-10-18
- * **Reclaim My Evenings** · 👤 Personal · 1/3
- * Evenings disappear into phone scrolling.
- * - [x] Block 7 to 8 pm for the gym
- * - [ ] Set a 30 minute limit on social apps
- * Tags: Time Blocking
+ *
+ * ### Getting My Evenings Back
+ * 🏠 Personal
+ *
+ * My evenings keep disappearing into my phone…
+ *
+ * #### What I could try
+ * - Pick one thing for the evening before I leave work.
  * ```
  */
 internal fun exportMarkdown(context: Context, sections: List<DaySection>): String {
@@ -69,16 +67,19 @@ private fun StringBuilder.appendIdea(context: Context, idea: Idea) {
         appendLine("**${context.getString(R.string.export_unsplit)}** ${oneLine(idea.rawInput)}")
         return
     }
-    val category = "${idea.category.emoji} ${context.getString(idea.category.label)}"
-    appendLine("**${oneLine(idea.title)}** · $category · ${idea.completedCount}/${idea.tasks.size}")
-    if (idea.concept.isNotBlank()) appendLine(oneLine(idea.concept))
-    idea.tasks.forEach { task -> appendLine("- [${if (task.done) "x" else " "}] ${oneLine(task.text)}") }
-    if (idea.techStack.isNotEmpty()) appendLine("${context.getString(R.string.export_tags)} ${idea.techStack.joinToString(", ")}")
+    appendLine("### ${oneLine(idea.title)}")
+    appendLine("${idea.category.emoji} ${context.getString(idea.category.label)}")
+    if (idea.body.isNotBlank()) {
+        appendLine()
+        appendLine(idea.body.replace(NOTE_HEADING) { "#".repeat(minOf(6, it.groupValues[1].length + 3)) + " " })
+    }
 }
 
 private fun oneLine(text: String): String = text.replace(LINE_BREAKS, " ").trim()
 
 private val LINE_BREAKS = Regex("""\s*[\r\n]+\s*""")
+
+private val NOTE_HEADING = Regex("""(?m)^(#{1,6})\s+""")
 
 /** Returns false when the text is too big for a share intent, so the caller can offer a file instead. */
 internal fun shareExport(context: Context, markdown: String): Boolean {

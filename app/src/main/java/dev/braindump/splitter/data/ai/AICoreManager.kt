@@ -1,10 +1,12 @@
 package dev.braindump.splitter.data.ai
 
+import android.graphics.Bitmap
 import com.google.mlkit.genai.common.DownloadStatus
 import com.google.mlkit.genai.common.FeatureStatus
 import com.google.mlkit.genai.common.GenAiException
 import com.google.mlkit.genai.prompt.Generation
 import com.google.mlkit.genai.prompt.GenerativeModel
+import com.google.mlkit.genai.prompt.ImagePart
 import com.google.mlkit.genai.prompt.ModelPreference
 import com.google.mlkit.genai.prompt.ModelReleaseStage
 import com.google.mlkit.genai.prompt.SystemInstruction
@@ -20,21 +22,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Clean, validated output of one split. */
-data class IdeaBreakdown(
-    val ideaTitle: String,
-    val rawConcept: String,
-    val techStackAnchors: List<String>,
-    val immediateMicroTasks: List<String>,
+/** One polished note: a title, the Markdown under it, and where it's filed. */
+data class IdeaNote(
+    val title: String,
+    val body: String,
     val category: IdeaCategory = IdeaCategory.OTHER,
 )
 
@@ -52,7 +46,7 @@ sealed class SplitException(
     /** A one-off inference hiccup; worth another go. */
     class Transient(message: String, cause: Throwable? = null) : SplitException(message, cause, retryable = true)
 
-    /** The model answered, but never with JSON that passed validation. */
+    /** The model answered, but never with any text. */
     class MalformedOutput(message: String) : SplitException(message, retryable = true)
 
     class EmptyInput : SplitException("Nothing to split", retryable = false)
@@ -63,14 +57,12 @@ sealed class SplitException(
  * that AICore already has on the device (no app-private model copy).
  *
  * Requests are serialized through [mutex] because AICore runs one inference at a time.
- * The JSON contract is enforced in steps: a system instruction (when supported) with the
- * schema and an example, then a lenient parser that validates and normalizes the answer, then
- * one stricter regeneration, then the other builds AICore has installed (nano-v3 misses the
- * schema more often than nano-v4), and finally a salvage of any plain numbered list.
+ * The answer is a Markdown note with a "Category:" line and a "# Title"; both are optional
+ * when reading it back, so any non-empty answer is usable. An empty one gets a nudged retry,
+ * then the other builds AICore has installed.
  */
 @Singleton
 class AICoreManager @Inject constructor(
-    private val json: Json,
     private val settings: AiSettings,
 ) {
     private val mutex = Mutex()
@@ -128,55 +120,60 @@ class AICoreManager @Inject constructor(
         }
     }
 
-    suspend fun splitIdea(rawIdea: String): IdeaBreakdown {
-        val input = sanitize(rawIdea)
+    /** Rewrites a rough dump (plus an optional photo, never stored) as a polished Markdown note. */
+    suspend fun polishIdea(rawIdea: String, image: Bitmap? = null): IdeaNote {
+        val tuning = settings.tuning.value
+        val input = sanitize(rawIdea, tuning.maxInputChars)
         if (input.isEmpty()) throw SplitException.EmptyInput()
+        val fallbackTitle = titleFrom(input, tuning.maxTitleChars)
 
         return infer(
             Prompt(
-                instruction = SYSTEM_PROMPT,
-                strictSuffix = STRICT_SUFFIX,
-                userTurn = "Input: $INPUT_OPEN$input$INPUT_CLOSE\nOutput:",
-                parse = { parseBreakdown(it) },
-                salvage = { answers -> salvageBreakdown(answers, input) },
+                tuning = tuning,
+                instruction = tuning.notePrompt,
+                retrySuffix = DefaultPrompts.NOTE_RETRY_SUFFIX,
+                userTurn = (if (image != null) IMAGE_HINT else "") + "Dump: $INPUT_OPEN$input$INPUT_CLOSE\nNote:",
+                parse = { parseNote(it, tuning.maxTitleChars, fallbackTitle, fallbackCategory = null) },
+                image = image,
             )
         )
     }
 
     /**
-     * Applies [ask] ("make the tasks smaller", "add a step for X") to an idea that was already
-     * split, and returns the whole idea rewritten. Fields the model leaves out keep their
-     * current value, so a weak build that only echoes the title still can't wipe the tasks.
+     * Applies [ask] ("make it shorter", "add a section on X") to a note and returns it rewritten.
+     * A title or category the model leaves out keeps its current value.
      */
-    suspend fun refineIdea(current: IdeaBreakdown, originalDump: String, ask: String): IdeaBreakdown {
-        val request = sanitize(ask).take(MAX_ASK_CHARS)
+    suspend fun refineIdea(current: IdeaNote, originalDump: String, ask: String): IdeaNote {
+        val tuning = settings.tuning.value
+        val request = sanitize(ask, tuning.maxAskChars)
         if (request.isEmpty()) throw SplitException.EmptyInput()
-        val idea = toJson(current)
-        val dump = sanitize(originalDump).take(MAX_REFINE_DUMP_CHARS)
+        val note = sanitize(noteText(current))
+        val dump = sanitize(originalDump, tuning.maxRefineDumpChars)
 
         return infer(
             Prompt(
-                instruction = REFINE_PROMPT,
-                strictSuffix = REFINE_STRICT_SUFFIX,
-                userTurn = "Idea: $INPUT_OPEN$idea$INPUT_CLOSE\n" +
+                tuning = tuning,
+                instruction = tuning.refinePrompt,
+                retrySuffix = DefaultPrompts.REFINE_RETRY_SUFFIX,
+                userTurn = "Note: $INPUT_OPEN$note$INPUT_CLOSE\n" +
                     "Original dump: $INPUT_OPEN$dump$INPUT_CLOSE\n" +
-                    "Request: $INPUT_OPEN$request$INPUT_CLOSE\nOutput:",
-                parse = { parseBreakdown(it, base = current) },
-                salvage = { null },
+                    "Request: $INPUT_OPEN$request$INPUT_CLOSE\nUpdated note:",
+                parse = { parseNote(it, tuning.maxTitleChars, current.title, current.category) },
             )
         )
     }
 
-    /** One kind of request: its rules, the user turn, and how to read and rescue the answer. */
+    /** One kind of request: its rules, the user turn, and how to read the answer. */
     private class Prompt(
+        val tuning: AiTuning,
         val instruction: String,
-        val strictSuffix: String,
+        val retrySuffix: String,
         val userTurn: String,
-        val parse: (String) -> IdeaBreakdown?,
-        val salvage: (List<String>) -> IdeaBreakdown?,
+        val parse: (String) -> IdeaNote?,
+        val image: Bitmap? = null,
     )
 
-    private suspend fun infer(prompt: Prompt): IdeaBreakdown =
+    private suspend fun infer(prompt: Prompt): IdeaNote =
         mutex.withLock {
             val featureStatus = try {
                 checkStatusLocked()
@@ -194,14 +191,12 @@ class AICoreManager @Inject constructor(
 
             var model = clientLocked()
             var useSystemInstruction = systemPromptSupportedLocked(model)
-            val answers = ArrayList<String>()
-            var lastProblem = "Gemini Nano returned no usable JSON"
 
             var attempt = 0
-            while (attempt < MAX_GENERATION_ATTEMPTS) {
+            while (attempt < prompt.tuning.attempts) {
                 val output = try {
                     // The retry puts the rules in the user turn; some Nano builds follow them better there.
-                    generate(model, prompt, strict = attempt > 0, useSystemInstruction && attempt == 0)
+                    generate(model, prompt, retry = attempt > 0, useSystemInstruction && attempt == 0)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -222,27 +217,20 @@ class AICoreManager @Inject constructor(
                 }
                 attempt++
 
-                if (output.isNullOrBlank()) {
-                    lastProblem = "Gemini Nano returned an empty answer"
-                    continue
-                }
-                answers += output
-                val parsed = prompt.parse(output)
-                if (parsed != null) return@withLock parsed
-                lastProblem = "Gemini Nano's answer didn't match the task schema"
+                if (output.isNullOrBlank()) continue
+                prompt.parse(output)?.let { return@withLock it }
             }
 
-            // This build can't follow the schema for this dump; another installed build often can.
-            splitWithOtherModelsLocked(prompt, answers)
-                ?: prompt.salvage(answers)
-                ?: throw SplitException.MalformedOutput(lastProblem)
+            // This build had nothing to say about this dump; another installed build may.
+            splitWithOtherModelsLocked(prompt)
+                ?: throw SplitException.MalformedOutput("Gemini Nano returned an empty answer")
         }
 
     /**
-     * Tries every other build AICore can serve right now. One that returns valid JSON becomes
+     * Tries every other build AICore can serve right now. One that returns a note becomes
      * the active model for the rest of the session, so later splits go straight to it.
      */
-    private suspend fun splitWithOtherModelsLocked(prompt: Prompt, answers: MutableList<String>): IdeaBreakdown? {
+    private suspend fun splitWithOtherModelsLocked(prompt: Prompt): IdeaNote? {
         val current = activeOption
         for (option in fallbackOptions()) {
             if (option == current || option in brokenOptions) continue
@@ -257,10 +245,9 @@ class AICoreManager @Inject constructor(
                 } catch (e: Exception) {
                     false
                 }
-                for (attempt in 0 until MAX_GENERATION_ATTEMPTS) {
-                    val output = generate(candidate, prompt, strict = attempt > 0, useSystemInstruction && attempt == 0)
+                for (attempt in 0 until prompt.tuning.attempts) {
+                    val output = generate(candidate, prompt, retry = attempt > 0, useSystemInstruction && attempt == 0)
                     if (output.isNullOrBlank()) continue
-                    answers += output
                     val parsed = prompt.parse(output) ?: continue
                     promoteLocked(option, candidate, useSystemInstruction)
                     promoted = true
@@ -289,24 +276,27 @@ class AICoreManager @Inject constructor(
     private suspend fun generate(
         model: GenerativeModel,
         prompt: Prompt,
-        strict: Boolean,
+        retry: Boolean,
         useSystemInstruction: Boolean,
     ): String? {
-        val instruction = if (strict) prompt.instruction + prompt.strictSuffix else prompt.instruction
+        val instruction = if (retry) prompt.instruction + prompt.retrySuffix else prompt.instruction
         val userTurn = prompt.userTurn
-        val request = if (useSystemInstruction) {
-            generateContentRequest(SystemInstruction(instruction), TextPart(userTurn)) { tune() }
+        val request = if (prompt.image != null) {
+            // Image turns go system-instruction-free; not every build takes both.
+            generateContentRequest(ImagePart(prompt.image), TextPart("$instruction\n$userTurn")) { tune(prompt.tuning) }
+        } else if (useSystemInstruction) {
+            generateContentRequest(SystemInstruction(instruction), TextPart(userTurn)) { tune(prompt.tuning) }
         } else {
-            generateContentRequest(TextPart("$instruction\n$userTurn")) { tune() }
+            generateContentRequest(TextPart("$instruction\n$userTurn")) { tune(prompt.tuning) }
         }
         return model.generateContent(request).candidates.firstOrNull()?.text
     }
 
-    private fun com.google.mlkit.genai.prompt.GenerateContentRequest.Builder.tune() {
-        temperature = TEMPERATURE
-        topK = TOP_K
+    private fun com.google.mlkit.genai.prompt.GenerateContentRequest.Builder.tune(tuning: AiTuning) {
+        temperature = tuning.temperature
+        topK = tuning.topK
         candidateCount = 1
-        maxOutputTokens = MAX_OUTPUT_TOKENS
+        maxOutputTokens = tuning.maxOutputTokens
     }
 
     private suspend fun checkStatusLocked(): Int {
@@ -493,257 +483,81 @@ class AICoreManager @Inject constructor(
     private fun describe(e: Throwable): String =
         e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
 
-    /** With a [base] (refining), missing fields keep its values and 1 to [MAX_REFINED_TASKS] tasks are fine. */
-    internal fun parseBreakdown(modelOutput: String, base: IdeaBreakdown? = null): IdeaBreakdown? {
-        val start = modelOutput.indexOf('{')
-        if (start < 0) return null
-        return jsonCandidates(modelOutput, start)
-            .mapNotNull(::decodeObject)
-            .mapNotNull { toBreakdown(it, base) }
-            .firstOrNull()
-    }
+    /**
+     * Reads a note out of the model's answer. The "Category:" line and a leading "# Title" are
+     * lifted out; a code fence or a "Here is your note:" lead-in is dropped. Missing pieces
+     * fall back to [fallbackTitle] and [fallbackCategory]. Null only when nothing is left.
+     */
+    internal fun parseNote(
+        modelOutput: String,
+        maxTitleChars: Int,
+        fallbackTitle: String,
+        fallbackCategory: IdeaCategory?,
+    ): IdeaNote? {
+        var lines = modelOutput.replace("\r\n", "\n").trim().lines()
+        if (lines.firstOrNull()?.trim()?.startsWith("```") == true) lines = lines.drop(1)
+        if (lines.lastOrNull()?.trim() == "```") lines = lines.dropLast(1)
 
-    /** The idea in the same snake_case shape the model writes, so it can edit it in place. */
-    private fun toJson(idea: IdeaBreakdown): String = JsonObject(
-        mapOf(
-            "idea_title" to JsonPrimitive(sanitize(idea.ideaTitle)),
-            "category" to JsonPrimitive(idea.category.name.lowercase().replaceFirstChar { it.titlecase() }),
-            "raw_concept" to JsonPrimitive(sanitize(idea.rawConcept)),
-            "tech_stack_anchors" to JsonArray(idea.techStackAnchors.map { JsonPrimitive(sanitize(it)) }),
-            "immediate_micro_tasks" to JsonArray(idea.immediateMicroTasks.map { JsonPrimitive(sanitize(it)) }),
-        )
-    ).toString()
-
-    /** The answer as written, then repaired copies in case it was cut off at the token limit. */
-    private fun jsonCandidates(output: String, start: Int): Sequence<String> = sequence {
-        val end = output.lastIndexOf('}')
-        if (end > start) yield(output.substring(start, end + 1))
-        // Each pass also drops the last, possibly half-written, field.
-        var fragment = output.substring(start)
-        repeat(MAX_REPAIR_CUTS) {
-            yield(closeJson(fragment))
-            val cut = fragment.lastIndexOf(',')
-            if (cut <= 0) return@sequence
-            fragment = fragment.substring(0, cut)
-        }
-    }
-
-    /** Closes whatever a cut-off answer left open: a string, arrays, the object. */
-    private fun closeJson(fragment: String): String {
-        val closers = ArrayDeque<Char>()
-        var inString = false
-        var escaped = false
-        for (c in fragment) {
-            if (inString) {
-                when {
-                    escaped -> escaped = false
-                    c == '\\' -> escaped = true
-                    c == '"' -> inString = false
-                }
-                continue
-            }
-            when (c) {
-                '"' -> inString = true
-                '{' -> closers.addLast('}')
-                '[' -> closers.addLast(']')
-                '}', ']' -> closers.removeLastOrNull()
-            }
-        }
-        val repaired = StringBuilder(fragment)
-        if (escaped) repaired.setLength(repaired.length - 1)
-        if (inString) repaired.append('"')
-        var end = repaired.length
-        while (end > 0 && (repaired[end - 1].isWhitespace() || repaired[end - 1] == ',')) end--
-        repaired.setLength(end)
-        if (repaired.endsWith(':')) repaired.append("null")
-        while (closers.isNotEmpty()) repaired.append(closers.removeLast())
-        return repaired.toString()
-    }
-
-    private fun decodeObject(candidate: String): JsonObject? = try {
-        json.parseToJsonElement(candidate) as? JsonObject
-    } catch (e: IllegalArgumentException) { // includes SerializationException
-        null
-    }
-
-    private fun toBreakdown(answer: JsonObject, base: IdeaBreakdown?): IdeaBreakdown? {
-        // Smaller builds drift on key names and shapes, so keys match loosely and lists may arrive as one string.
-        val fields = answer.entries.associate { (key, value) -> key.lowercase().filter(Char::isLetterOrDigit) to value }
-        fun field(names: List<String>, hint: String): JsonElement? =
-            names.firstNotNullOfOrNull { fields[it] } ?: fields.entries.firstOrNull { hint in it.key }?.value
-
-        val title = cleanLine(field(TITLE_KEYS, "title")?.let(::text).orEmpty()).take(MAX_TITLE_CHARS)
-            .ifEmpty { base?.ideaTitle.orEmpty() }
-        if (title.isEmpty()) return null
-
-        val taskField = field(TASK_KEYS, "task")
-        val tasks = if (taskField == null && base != null) {
-            base.immediateMicroTasks
-        } else {
-            val maxTasks = if (base == null) REQUIRED_TASKS else MAX_REFINED_TASKS
-            val cleaned = taskField?.let { items(it, TASK_SEPARATORS) }.orEmpty().asSequence()
-                .map(::cleanLine)
-                .filter { it.isNotEmpty() }
-                .distinctBy { it.lowercase() }
-                .take(maxTasks)
-                .toList()
-            val valid = if (base == null) cleaned.size == REQUIRED_TASKS else cleaned.isNotEmpty()
-            if (!valid) return null
-            cleaned
+        var category: IdeaCategory? = null
+        val kept = ArrayList<String>(lines.size)
+        for (line in lines) {
+            val match = if (category == null) CATEGORY_LINE.matchEntire(line.trim()) else null
+            if (match != null) category = IdeaCategory.parse(match.groupValues[1]) else kept += line
         }
 
-        val anchorField = field(ANCHOR_KEYS, "stack")
-        val anchors = if (anchorField == null && base != null) {
-            base.techStackAnchors
-        } else {
-            anchorField?.let { items(it, ANCHOR_SEPARATORS) }.orEmpty().asSequence()
-                .map(::cleanLine)
-                .filter { it.isNotEmpty() && it.length <= MAX_ANCHOR_CHARS }
-                .distinctBy { it.lowercase() }
-                .take(MAX_ANCHORS)
-                .toList()
+        var title = ""
+        var bodyLines: List<String> = kept
+        val titleAt = kept.indexOfFirst { TITLE_LINE.matches(it.trim()) }
+        // A lead-in sentence may sit above the title, but not a whole paragraph.
+        if (titleAt >= 0 && kept.subList(0, titleAt).count { it.isNotBlank() } <= 1) {
+            val groups = TITLE_LINE.matchEntire(kept[titleAt].trim())!!.groupValues
+            title = cleanTitle(groups[1].ifEmpty { groups[2] }).take(maxTitleChars)
+            bodyLines = kept.subList(titleAt + 1, kept.size)
         }
+        val body = bodyLines.joinToString("\n").trim().replace(EXTRA_BLANK_LINES, "\n\n")
+        if (title.isEmpty() && body.isEmpty()) return null
 
-        val concept = field(CONCEPT_KEYS, "concept")?.let(::text)?.trim()
-        val category = field(CATEGORY_KEYS, "categor")?.let(::text)?.takeIf { it.isNotBlank() }
-
-        return IdeaBreakdown(
-            ideaTitle = title,
-            rawConcept = concept ?: base?.rawConcept.orEmpty(),
-            techStackAnchors = anchors,
-            immediateMicroTasks = tasks,
-            category = if (category == null && base != null) base.category else IdeaCategory.parse(category),
+        return IdeaNote(
+            title = title.ifEmpty { fallbackTitle },
+            body = body,
+            category = category ?: fallbackCategory ?: IdeaCategory.OTHER,
         )
     }
 
-    /** A value as text; for an object such as {"task": "...", "priority": 1}, its first string. */
-    private fun text(element: JsonElement): String = when (element) {
-        is JsonPrimitive -> element.contentOrNull.orEmpty()
-        is JsonArray -> element.joinToString(" ") { text(it) }
-        is JsonObject -> (element.values.firstOrNull { it is JsonPrimitive && it.isString } ?: element.values.firstOrNull())
-            ?.let(::text)
-            .orEmpty()
-    }
+    /** The note the way the model writes it, so a refine can edit it in place. */
+    private fun noteText(note: IdeaNote): String =
+        "Category: ${note.category.name.lowercase().replaceFirstChar { it.titlecase() }}\n# ${note.title}\n\n${note.body}"
 
-    private fun items(element: JsonElement, separators: Regex): List<String> =
-        if (element is JsonArray) element.map(::text) else text(element).split(separators)
+    private fun cleanTitle(value: String): String = value.trim().trim('*', '_', '#', '"', '`').trim()
 
-    /** Last resort: an answer that ignored JSON but still listed steps keeps the dump useful. */
-    private fun salvageBreakdown(answers: List<String>, input: String): IdeaBreakdown? {
-        for (answer in answers.asReversed()) {
-            val steps = answer.lineSequence()
-                .filter { LIST_MARKER.containsMatchIn(it) }
-                .map(::cleanLine)
-                .filter { it.length in MIN_TASK_CHARS..MAX_TASK_CHARS && '{' !in it && '}' !in it }
-                .distinctBy { it.lowercase() }
-                .take(REQUIRED_TASKS)
-                .toList()
-            if (steps.size == REQUIRED_TASKS) {
-                return IdeaBreakdown(
-                    ideaTitle = titleFrom(input),
-                    rawConcept = "",
-                    techStackAnchors = emptyList(),
-                    immediateMicroTasks = steps,
-                )
-            }
-        }
-        return null
-    }
-
-    private fun titleFrom(input: String): String =
+    private fun titleFrom(input: String, maxChars: Int): String =
         input.split(WHITESPACE)
             .filter { it.isNotBlank() }
-            .take(SALVAGE_TITLE_WORDS)
+            .take(FALLBACK_TITLE_WORDS)
             .joinToString(" ")
             .replaceFirstChar { it.titlecase() }
-            .take(MAX_TITLE_CHARS)
+            .take(maxChars)
 
-    private fun cleanLine(value: String): String =
-        value.replace(LIST_MARKER, "").trim().trim('"', '\'', '`').trim()
-
-    private fun sanitize(raw: String): String =
-        raw.replace(INPUT_OPEN, "").replace(INPUT_CLOSE, "").trim().take(MAX_INPUT_CHARS)
+    private fun sanitize(raw: String, maxChars: Int = Int.MAX_VALUE): String =
+        raw.replace(INPUT_OPEN, "").replace(INPUT_CLOSE, "").trim().take(maxChars)
 
     private companion object {
-        const val TEMPERATURE = 0.2f
-        const val TOP_K = 16
-        const val MAX_OUTPUT_TOKENS = 256
-        const val MAX_GENERATION_ATTEMPTS = 2
+        const val FALLBACK_TITLE_WORDS = 6
 
-        // Leaves comfortable room for the instruction inside Gemini Nano's input window.
-        const val MAX_INPUT_CHARS = 4_000
-        const val REQUIRED_TASKS = 3
-        const val MAX_REFINED_TASKS = 5
-        const val MAX_ASK_CHARS = 600
-        const val MAX_REFINE_DUMP_CHARS = 600
-        const val MAX_ANCHORS = 5
-        const val MAX_ANCHOR_CHARS = 40
-        const val MAX_TITLE_CHARS = 80
-        const val MIN_TASK_CHARS = 4
-        const val MAX_TASK_CHARS = 160
-        const val SALVAGE_TITLE_WORDS = 6
-        const val MAX_REPAIR_CUTS = 4
+        /** "Category: Health", also bolded or with trailing words. */
+        val CATEGORY_LINE = Regex("""^[*_\s]*category[*_\s]*:[*_\s]*([A-Za-z]+).*$""", RegexOption.IGNORE_CASE)
 
-        // Keys compared lowercase with punctuation stripped, so "ideaTitle" and "idea_title" both match.
-        val TITLE_KEYS = listOf("ideatitle", "title", "name")
-        val CONCEPT_KEYS = listOf("rawconcept", "concept", "summary", "description")
-        val ANCHOR_KEYS = listOf("techstackanchors", "techstack", "stack", "technologies", "tech", "anchors")
-        val TASK_KEYS = listOf("immediatemicrotasks", "microtasks", "tasks", "immediatetasks", "nextsteps", "steps", "actions")
-        val CATEGORY_KEYS = listOf("category", "categories", "type", "area", "domain")
+        /** "# Title" (up to ###) or a line that is entirely bold. */
+        val TITLE_LINE = Regex("""^(?:#{1,3}\s+(.+?)\s*#*|\*\*([^*]+)\*\*)$""")
 
-        val TASK_SEPARATORS = Regex("""\n|;|\s+(?=\d+[.)]\s)""")
-        val ANCHOR_SEPARATORS = Regex("""[\n,;|]""")
+        val EXTRA_BLANK_LINES = Regex("""\n{3,}""")
         val WHITESPACE = Regex("""\s+""")
 
         const val INPUT_OPEN = "<<<"
+        const val IMAGE_HINT = "An image is attached as part of the dump; pull out whatever in it matters.\n"
         const val INPUT_CLOSE = ">>>"
 
         const val UNAVAILABLE_REASON =
             "Gemini Nano isn't available. Update AICore in the Play Store; it won't run on an unlocked bootloader."
-
-        val LIST_MARKER = Regex("""^\s*(?:[-*•]+|\d+[.)])\s*""")
-
-        val SYSTEM_PROMPT = """
-            You are BrainDump, a practical coach who turns messy thoughts into action. Turn the dump between <<< and >>> into ONE JSON object.
-            The dump can be about anything: personal life, habits, health, work, study, money, a creative project, or software.
-            Answer in the same domain as the dump. Only talk about apps or code when the dump is about building software.
-            Rules:
-            - Output ONLY the JSON object. No markdown, no code fences, no commentary.
-            - Use exactly these keys: "idea_title", "category", "raw_concept", "tech_stack_anchors", "immediate_micro_tasks".
-            - Every value is a plain string or a list of plain strings. Keep it short; stop right after the closing brace.
-            - idea_title: at most 8 words, Title Case.
-            - category: exactly one of Personal, Work, Health, Learning, Money, Creative, Tech, Other.
-            - raw_concept: 1 or 2 plain sentences naming the real problem or goal and why it matters.
-            - tech_stack_anchors: 0 to 5 short tags for the tools, methods or technologies that fit, such as "Pomodoro" or "Google Calendar" for a life problem and "Kotlin" for an app. Use [] if nothing fits.
-            - immediate_micro_tasks: EXACTLY 3 strings. Each is a concrete action under 15 words that can be done today, starts with a verb, ordered by impact.
-            Schema: {"idea_title":string,"category":string,"raw_concept":string,"tech_stack_anchors":[string],"immediate_micro_tasks":[string,string,string]}
-            Example input: <<<i keep wasting my evenings on my phone and never get to the gym or reading, always tired and behind>>>
-            Example output: {"idea_title":"Reclaim My Evenings","category":"Personal","raw_concept":"Evenings disappear into phone scrolling, leaving no time or energy for exercise and reading.","tech_stack_anchors":["Time Blocking","Digital Wellbeing"],"immediate_micro_tasks":["Block 7 to 8 pm in the calendar for the gym","Set a 30 minute daily limit on social apps","Put a book on the pillow before leaving for work"]}
-            Example input: <<<app that reminds me to drink water maybe with a widget idk and syncs to my watch>>>
-            Example output: {"idea_title":"Hydration Reminder Widget","category":"Tech","raw_concept":"An Android app that nudges the user to drink water from a home screen widget and mirrors reminders on a smartwatch.","tech_stack_anchors":["Kotlin","Jetpack Glance","WorkManager","Wear OS"],"immediate_micro_tasks":["Scaffold a Compose app with a Room table for intake logs","Build a Glance widget that logs one glass per tap","Schedule hourly reminders with WorkManager"]}
-        """.trimIndent()
-
-        const val STRICT_SUFFIX =
-            "\nYour previous answer was invalid. Keep every string short and return exactly 3 micro tasks."
-
-        val REFINE_PROMPT = """
-            You are BrainDump, a practical coach. The user already has an idea, given as JSON between <<< and >>> after "Idea:". Change it as their Request asks.
-            Rules:
-            - Output ONLY the whole updated idea as ONE JSON object with the same keys. No markdown, no code fences, no commentary.
-            - Keep every field the request doesn't touch exactly as it is.
-            - Every value is a plain string or a list of plain strings. Keep it short; stop right after the closing brace.
-            - idea_title: at most 8 words, Title Case.
-            - category: exactly one of Personal, Work, Health, Learning, Money, Creative, Tech, Other.
-            - raw_concept: 1 or 2 plain sentences.
-            - tech_stack_anchors: 0 to 5 short tags.
-            - immediate_micro_tasks: 1 to 5 strings, each a concrete action under 15 words that starts with a verb. Add, remove, split or reword tasks only when asked; otherwise keep them.
-            - Stay in the same domain as the idea. The original dump is only background.
-            Example idea: <<<{"idea_title":"Reclaim My Evenings","category":"Personal","raw_concept":"Evenings disappear into phone scrolling.","tech_stack_anchors":["Time Blocking"],"immediate_micro_tasks":["Block 7 to 8 pm for the gym","Set a 30 minute limit on social apps","Put a book on the pillow"]}>>>
-            Example request: <<<add a step to buy running shoes and make the title shorter>>>
-            Example output: {"idea_title":"Better Evenings","category":"Personal","raw_concept":"Evenings disappear into phone scrolling.","tech_stack_anchors":["Time Blocking"],"immediate_micro_tasks":["Block 7 to 8 pm for the gym","Set a 30 minute limit on social apps","Put a book on the pillow","Buy running shoes this weekend"]}
-        """.trimIndent()
-
-        const val REFINE_STRICT_SUFFIX =
-            "\nYour previous answer was invalid. Output the whole idea as one JSON object with the same keys and short strings."
     }
 }

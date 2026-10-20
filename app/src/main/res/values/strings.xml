@@ -3,7 +3,7 @@
     <string name="app_name">BrainDump</string>
 
     <string name="tile_label">BrainDump</string>
-    <string name="tile_subtitle">Dump an idea</string>
+    <string name="tile_subtitle">Dump a thought</string>
 
     <string name="shortcut_voice_short">Voice dump</string>
     <string name="shortcut_voice_long">Dump an idea by voice</string>
@@ -11,16 +11,16 @@
     <string name="shortcut_type_long">Dump an idea by typing</string>
 
     <string name="capture_title">Dump it</string>
-    <string name="capture_hint">Messy is fine. Gemini Nano will split it into tasks.</string>
+    <string name="capture_hint">Messy is fine. Gemini Nano will turn it into a clear note.</string>
     <string name="capture_voice">Speak your idea</string>
     <string name="capture_voice_stop">Stop listening</string>
     <string name="capture_listening">Listening on-device…</string>
-    <string name="capture_submit">Split it</string>
-    <string name="capture_splitting">Splitting on-device…</string>
+    <string name="capture_submit">Polish it</string>
+    <string name="capture_splitting">Polishing on-device…</string>
     <string name="capture_on_device">On-device</string>
-    <string name="capture_result_split">Split: %1$s</string>
-    <string name="capture_result_queued">Saved. It\'ll be split when Gemini Nano is ready.</string>
-    <string name="capture_result_failed">Saved, but Gemini Nano couldn\'t split it</string>
+    <string name="capture_result_split">Polished: %1$s</string>
+    <string name="capture_result_queued">Saved. It\'ll be polished when Gemini Nano is ready.</string>
+    <string name="capture_result_failed">Saved, but Gemini Nano couldn\'t polish it</string>
 
     <string name="voice_unavailable">On-device speech recognition isn\'t available on this phone</string>
     <string name="voice_permission_denied">Microphone permission is needed for voice dumps</string>
@@ -31,10 +31,53 @@
 
     <string name="dashboard_fab">Dump</string>
     <string name="dashboard_voice">Dump by voice</string>
-    <string name="dashboard_more">More options</string>
     <string name="dashboard_add_tile">Add Quick Settings tile</string>
     <string name="dashboard_pin_voice">Add voice dump to home screen</string>
     <string name="dashboard_pin_type">Add type dump to home screen</string>
+
+    <string name="settings_title">Settings</string>
+    <string name="settings_back">Back</string>
+    <string name="settings_save">Save</string>
+    <string name="settings_reset">Reset</string>
+    <string name="settings_section_export">Export</string>
+    <string name="settings_export_empty">Nothing to export yet</string>
+    <string name="settings_section_shortcuts">Shortcuts</string>
+    <string name="settings_section_model">Model</string>
+    <string name="settings_use_preview_body">Nano 4 Full goes first, then Nano 4 Fast, then Nano 3. One flops, the next one steps up fr.</string>
+    <string name="settings_model_specs">🧠 Nano 4 Full: the big brain, deep notes
+⚡ Nano 4 Fast: 2B params, ~19 tok/s, 60% less battery, no cap
+🐢 Nano 3: ~3.2B params, ~4.8 GB, the reliable OG
+All on-device. Your dumps never touch the cloud.</string>
+    <string name="capture_attach">Add a pic</string>
+    <string name="capture_camera">Snap it 📸</string>
+    <string name="capture_gallery">Pull from gallery 🖼️</string>
+    <string name="capture_remove_image">Yeet the pic</string>
+    <string name="capture_image_failed">That pic is not loading bestie, try another</string>
+    <string name="settings_section_prompts">Prompts</string>
+    <string name="settings_prompts_body">What Gemini Nano is told before your dump, which follows between &lt;&lt;&lt; and &gt;&gt;&gt;. The app takes the Category line and the first # heading out of the answer as the category and title, and shows the rest as Markdown.</string>
+    <string name="settings_note_prompt">Note prompt</string>
+    <string name="settings_refine_prompt">Refine prompt</string>
+    <string name="settings_section_limits">Limits</string>
+    <string name="settings_out_of_range">Enter a number from %1$s</string>
+    <string name="settings_output_tokens">Max output tokens</string>
+    <string name="settings_output_tokens_help">How long a note can be. A note that hits this stops mid-sentence. Some Nano builds cap or refuse high values.</string>
+    <string name="settings_temperature">Temperature</string>
+    <string name="settings_temperature_help">Higher writes more freely; lower sticks closer to your words and the format.</string>
+    <string name="settings_top_k">Top K</string>
+    <string name="settings_top_k_help">How many likely words the model picks from at each step.</string>
+    <string name="settings_attempts">Attempts per model</string>
+    <string name="settings_attempts_help">Tries after an empty answer before moving on to the other installed Nano builds.</string>
+    <string name="settings_input_chars">Max dump length (characters)</string>
+    <string name="settings_input_chars_help">Longer dumps are cut to this. Too long and Gemini Nano rejects the request.</string>
+    <string name="settings_title_chars">Max title length (characters)</string>
+    <string name="settings_title_chars_help">Longer titles are cut.</string>
+    <string name="settings_ask_chars">Max refine request (characters)</string>
+    <string name="settings_ask_chars_help">How much of what you type in Refine is sent.</string>
+    <string name="settings_refine_dump_chars">Original dump sent with refine (characters)</string>
+    <string name="settings_refine_dump_chars_help">Background the model sees while refining.</string>
+    <string name="settings_section_reset">Defaults</string>
+    <string name="settings_reset_all">Reset prompts and limits</string>
+    <string name="settings_reset_all_body">Puts every prompt and limit back to the built-in values.</string>
 
     <string name="widget_label">BrainDump</string>
     <string name="widget_description">Tap to type an idea, or tap the mic to say it</string>
@@ -53,35 +96,35 @@
     <string name="ai_status_downloading_percent">Downloading Gemini Nano… %1$d%%</string>
     <string name="ai_status_ready">Gemini Nano ready · on-device</string>
     <string name="ai_status_ready_model">Ready · %1$s</string>
-    <string name="dashboard_use_preview">Use preview Gemini Nano</string>
+    <string name="dashboard_use_preview">Run Gemini Nano 4 (preview)</string>
     <string name="ai_status_unavailable">AI offline · ideas are still saved</string>
 
-    <string name="idea_splitting">Splitting on-device…</string>
+    <string name="idea_splitting">Polishing on-device…</string>
     <string name="idea_waiting">Waiting for Gemini Nano</string>
-    <string name="idea_failed">Couldn\'t split this one</string>
+    <string name="idea_failed">Couldn\'t polish this one</string>
     <string name="idea_retry">Retry</string>
     <string name="idea_delete">Delete</string>
     <string name="idea_delete_title">Delete this idea?</string>
-    <string name="idea_delete_body">“%1$s” and its tasks will be gone for good.</string>
+    <string name="idea_delete_body">“%1$s” and its note will be gone for good.</string>
     <string name="idea_delete_cancel">Cancel</string>
     <string name="idea_category">Category</string>
     <string name="idea_category_change">Change category</string>
     <string name="idea_share">Share</string>
     <string name="idea_share_title">Share idea</string>
-    <string name="idea_original">Original dump</string>
-    <string name="idea_expand">Show tasks</string>
-    <string name="idea_collapse">Hide tasks</string>
-    <string name="idea_progress">%1$d/%2$d</string>
+    <string name="idea_original">OG dump</string>
+    <string name="idea_original_peek">OG dump · tap to peek 👀</string>
+    <string name="idea_expand">Show note</string>
+    <string name="idea_collapse">Hide note</string>
     <string name="idea_refine">Refine</string>
 
     <string name="refine_title">Refine</string>
-    <string name="refine_hint">Tell Gemini Nano what to change…</string>
+    <string name="refine_hint">Tell Gemini Nano what to change in the note…</string>
     <string name="refine_send">Send</string>
     <string name="refine_thinking">Refining on-device…</string>
-    <string name="refine_suggest_smaller">Make the tasks smaller</string>
-    <string name="refine_suggest_next">Add the next step</string>
+    <string name="refine_suggest_shorter">Make it shorter</string>
+    <string name="refine_suggest_detail">Add more detail</string>
+    <string name="refine_suggest_steps">Add next steps</string>
     <string name="refine_suggest_title">Shorter title</string>
-    <string name="refine_suggest_split">Split the first task in two</string>
 
     <string name="export_share">Share all ideas</string>
     <string name="export_save">Save all as Markdown file</string>
@@ -89,8 +132,7 @@
     <string name="export_too_big">Too many ideas to share at once. Saving as a file instead.</string>
     <string name="export_saved">Exported</string>
     <string name="export_failed">Couldn\'t write the file</string>
-    <string name="export_unsplit">Unsplit:</string>
-    <string name="export_tags">Tags:</string>
+    <string name="export_unsplit">Not polished yet:</string>
 
     <string name="timeline_days">Days</string>
     <string name="timeline_months">Months</string>
