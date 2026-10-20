@@ -121,7 +121,7 @@ class AICoreManager @Inject constructor(
     }
 
     /** Rewrites a rough dump (plus an optional photo, never stored) as a polished Markdown note. */
-    suspend fun polishIdea(rawIdea: String, image: Bitmap? = null): IdeaNote {
+    suspend fun polishIdea(rawIdea: String, image: Bitmap? = null, identityProfile: String? = null): IdeaNote {
         val tuning = settings.tuning.value
         val input = sanitize(rawIdea, tuning.maxInputChars)
         if (input.isEmpty()) throw SplitException.EmptyInput()
@@ -132,7 +132,9 @@ class AICoreManager @Inject constructor(
                 tuning = tuning,
                 instruction = tuning.notePrompt,
                 retrySuffix = DefaultPrompts.NOTE_RETRY_SUFFIX,
-                userTurn = (if (image != null) IMAGE_HINT else "") + "Dump: $INPUT_OPEN$input$INPUT_CLOSE\nNote:",
+                userTurn = identityBlock(identityProfile) +
+                    (if (image != null) IMAGE_HINT else "") +
+                    "Dump: $INPUT_OPEN$input$INPUT_CLOSE\nNote:",
                 parse = { parseNote(it, tuning.maxTitleChars, fallbackTitle, fallbackCategory = null) },
                 image = image,
             )
@@ -143,7 +145,12 @@ class AICoreManager @Inject constructor(
      * Applies [ask] ("make it shorter", "add a section on X") to a note and returns it rewritten.
      * A title or category the model leaves out keeps its current value.
      */
-    suspend fun refineIdea(current: IdeaNote, originalDump: String, ask: String): IdeaNote {
+    suspend fun refineIdea(
+        current: IdeaNote,
+        originalDump: String,
+        ask: String,
+        identityProfile: String? = null,
+    ): IdeaNote {
         val tuning = settings.tuning.value
         val request = sanitize(ask, tuning.maxAskChars)
         if (request.isEmpty()) throw SplitException.EmptyInput()
@@ -155,12 +162,19 @@ class AICoreManager @Inject constructor(
                 tuning = tuning,
                 instruction = tuning.refinePrompt,
                 retrySuffix = DefaultPrompts.REFINE_RETRY_SUFFIX,
-                userTurn = "Note: $INPUT_OPEN$note$INPUT_CLOSE\n" +
+                userTurn = identityBlock(identityProfile) +
+                    "Note: $INPUT_OPEN$note$INPUT_CLOSE\n" +
                     "Original dump: $INPUT_OPEN$dump$INPUT_CLOSE\n" +
                     "Request: $INPUT_OPEN$request$INPUT_CLOSE\nUpdated note:",
                 parse = { parseNote(it, tuning.maxTitleChars, current.title, current.category) },
             )
         )
+    }
+
+    private fun identityBlock(identityProfile: String?): String {
+        val profile = identityProfile?.trim().orEmpty()
+        if (profile.isEmpty()) return ""
+        return "Identity profile (style only, never facts): $INPUT_OPEN$profile$INPUT_CLOSE\n"
     }
 
     /** One kind of request: its rules, the user turn, and how to read the answer. */

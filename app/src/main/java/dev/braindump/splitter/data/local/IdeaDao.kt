@@ -4,7 +4,15 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.Query
 import androidx.room.Update
+import androidx.room.ColumnInfo
 import kotlinx.coroutines.flow.Flow
+
+data class IdentityStyleSample(
+    val category: String?,
+    @ColumnInfo(name = "idea_title")
+    val ideaTitle: String?,
+    val body: String,
+)
 
 @Dao
 interface IdeaDao {
@@ -17,6 +25,14 @@ interface IdeaDao {
 
     @Query("SELECT id FROM ideas WHERE status = 'PENDING' ORDER BY created_at ASC, id ASC")
     suspend fun pendingIds(): List<Long>
+
+    @Query(
+        "SELECT category, idea_title, body FROM ideas WHERE status = 'READY' " +
+            "AND body IS NOT NULL AND TRIM(body) != '' " +
+            "AND (:excludeId IS NULL OR id != :excludeId) " +
+            "ORDER BY updated_at DESC, id DESC LIMIT :limit"
+    )
+    suspend fun recentStyleSamples(limit: Int, excludeId: Long? = null): List<IdentityStyleSample>
 
     @Insert
     suspend fun insert(idea: IdeaEntity): Long
