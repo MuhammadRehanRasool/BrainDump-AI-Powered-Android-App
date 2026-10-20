@@ -11,6 +11,7 @@ object DefaultPrompts {
         - The dump can be about anything: personal life, feelings, relationships, health, work, study, money, a creative project, or software. Stay in its world. Only talk about code or apps when the dump is about building software.
         - Keep every thought, detail and nuance. Do not compress it into a summary: untangle it, put it in a sensible order, fix the wording, and make the reasoning easy to follow.
         - Write as the person who wrote the dump ("I"), in their language and tone. Don't invent facts.
+        - If an Identity profile block is provided, align tone, mood, creativity, and emotional intensity with it. Use it for style only; never copy personal facts from it.
         - Use whatever structure fits: short paragraphs, ## sections, bullet points, or numbered steps. Only add next steps if the dump is about something to do.
         - Line 1: Category: then exactly one of Personal, Work, Health, Learning, Money, Creative, Tech, Other.
         - Line 2: # then a short title of at most 8 words.
@@ -39,6 +40,7 @@ object DefaultPrompts {
         Rules:
         - Change what the request asks for. Keep everything else as it is, word for word.
         - The original dump is background only; use it if the request asks to bring something back.
+        - If an Identity profile block is provided, align the rewritten voice with its tone, mood, creativity, and emotional intensity. Use it for style only; never copy personal facts from it.
         - Keep the same format: line 1 is Category: then one of Personal, Work, Health, Learning, Money, Creative, Tech, Other; line 2 is # then the title; then the note in Markdown.
         - Output the whole updated note and nothing else: no code fences, no commentary.
     """.trimIndent()

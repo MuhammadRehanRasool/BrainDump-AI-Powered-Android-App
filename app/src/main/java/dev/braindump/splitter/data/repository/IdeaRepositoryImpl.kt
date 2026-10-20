@@ -70,8 +70,9 @@ class IdeaRepositoryImpl @Inject constructor(
         if (idea.status != IdeaStatus.READY) return RefineOutcome.Failed("Wait until the note is written")
 
         val before = idea.toNote()
+        val identityProfile = personalIdentityProfile(excludeIdeaId = ideaId)
         val refined = try {
-            ai.refineIdea(before, idea.rawInput, request)
+            ai.refineIdea(before, idea.rawInput, request, identityProfile)
         } catch (e: SplitException) {
             return RefineOutcome.Failed(e.message ?: "Gemini Nano couldn't refine this")
         }
@@ -131,7 +132,11 @@ class IdeaRepositoryImpl @Inject constructor(
                 if (idea.status != IdeaStatus.PENDING) continue
 
                 try {
-                    val note = ai.polishIdea(idea.rawInput, pendingImages[id])
+                    val note = ai.polishIdea(
+                        rawIdea = idea.rawInput,
+                        image = pendingImages[id],
+                        identityProfile = personalIdentityProfile(excludeIdeaId = id),
+                    )
                     pendingImages.remove(id)
                     dao.update(
                         idea.copy(
@@ -170,6 +175,29 @@ class IdeaRepositoryImpl @Inject constructor(
         category = IdeaCategory.parse(category),
     )
 
+    private suspend fun personalIdentityProfile(excludeIdeaId: Long? = null): String {
+        val samples = dao.recentStyleSamples(limit = STYLE_SAMPLE_LIMIT, excludeId = excludeIdeaId)
+        if (samples.isEmpty()) return ""
+        val profile = buildString {
+            append("Use this recent writing fingerprint to align style (tone, mood, creativity, emotionality).")
+            append(" Keep only style patterns and never copy personal facts.\n")
+            var index = 1
+            for (sample in samples) {
+                val excerpt = sample.body.replace(WHITESPACE, " ").trim().take(STYLE_EXCERPT_CHARS)
+                if (excerpt.isEmpty()) continue
+                append(index++).append(") ")
+                sample.category?.takeIf(String::isNotBlank)?.let {
+                    append("Category ").append(it).append("; ")
+                }
+                sample.ideaTitle?.takeIf(String::isNotBlank)?.let {
+                    append("Title \"").append(it.replace(WHITESPACE, " ").trim()).append("\"; ")
+                }
+                append("Excerpt: ").append(excerpt).append('\n')
+            }
+        }.trim()
+        return profile.take(STYLE_PROFILE_MAX_CHARS)
+    }
+
     /** The chat reply: what actually changed, read off the note rather than the model's word for it. */
     private fun describeChanges(before: IdeaNote, after: IdeaNote): String {
         val changes = ArrayList<String>()
@@ -188,6 +216,9 @@ class IdeaRepositoryImpl @Inject constructor(
         const val PHOTO_ONLY = "📸 pic dump"
         const val MAX_ATTEMPTS = 3
         const val DELETED = "This idea was deleted"
+        const val STYLE_SAMPLE_LIMIT = 4
+        const val STYLE_EXCERPT_CHARS = 220
+        const val STYLE_PROFILE_MAX_CHARS = 1_200
         val WHITESPACE = Regex("""\s+""")
     }
 }
