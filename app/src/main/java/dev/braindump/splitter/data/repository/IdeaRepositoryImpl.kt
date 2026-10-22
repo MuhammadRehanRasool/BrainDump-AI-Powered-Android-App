@@ -3,6 +3,7 @@ package dev.braindump.splitter.data.repository
 import dev.braindump.splitter.data.ai.AICoreManager
 import dev.braindump.splitter.data.ai.AiSettings
 import dev.braindump.splitter.data.ai.IdeaNote
+import dev.braindump.splitter.data.ai.PersonaStore
 import dev.braindump.splitter.data.ai.SplitException
 import dev.braindump.splitter.data.local.IdeaDao
 import dev.braindump.splitter.data.local.IdeaEntity
@@ -13,11 +14,14 @@ import dev.braindump.splitter.domain.model.CaptureOutcome
 import dev.braindump.splitter.domain.model.Idea
 import dev.braindump.splitter.domain.model.IdeaCategory
 import dev.braindump.splitter.domain.model.IdeaStatus
+import dev.braindump.splitter.domain.model.Persona
 import dev.braindump.splitter.domain.model.RefineOutcome
 import dev.braindump.splitter.domain.model.RefineTurn
 import dev.braindump.splitter.domain.repository.IdeaRepository
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -29,10 +33,12 @@ class IdeaRepositoryImpl @Inject constructor(
     private val dao: IdeaDao,
     private val ai: AICoreManager,
     private val settings: AiSettings,
+    private val personaStore: PersonaStore,
 ) : IdeaRepository {
 
     // One drain at a time; a caller that waits here sees everything queued before it.
     private val drainMutex = Mutex()
+    private val personaMutex = Mutex()
 
     // Photos live in memory only until their note is written, then they're dropped.
     private val pendingImages = java.util.concurrent.ConcurrentHashMap<Long, android.graphics.Bitmap>()
@@ -70,9 +76,8 @@ class IdeaRepositoryImpl @Inject constructor(
         if (idea.status != IdeaStatus.READY) return RefineOutcome.Failed("Wait until the note is written")
 
         val before = idea.toNote()
-        val identityProfile = personalIdentityProfile(excludeIdeaId = ideaId)
         val refined = try {
-            ai.refineIdea(before, idea.rawInput, request, identityProfile)
+            ai.refineIdea(before, idea.rawInput, request, personaStore.active)
         } catch (e: SplitException) {
             return RefineOutcome.Failed(e.message ?: "Gemini Nano couldn't refine this")
         }
@@ -118,6 +123,52 @@ class IdeaRepositoryImpl @Inject constructor(
         drainMutex.withLock { drain() }
     }
 
+    override val persona: StateFlow<Persona?> get() = personaStore.persona
+
+    override val personaEnabled: StateFlow<Boolean> get() = personaStore.enabled
+
+    private val _personaBuilding = MutableStateFlow(false)
+    override val personaBuilding: StateFlow<Boolean> = _personaBuilding.asStateFlow()
+
+    override fun setPersonaEnabled(enabled: Boolean) {
+        personaStore.setEnabled(enabled)
+    }
+
+    override fun forgetPersona() {
+        // Off too, or the next foreground would quietly learn it all over again.
+        personaStore.setEnabled(false)
+        personaStore.clear()
+    }
+
+    override suspend fun refreshPersona(force: Boolean): String? {
+        // One build at a time; a second tap or the foreground check just rides on the first.
+        if (!personaMutex.tryLock()) return null
+        try {
+            val count = dao.countDumps(Persona.MIN_DUMP_CHARS)
+            if (count < Persona.MIN_DUMPS) return if (force) "Dump a few more thoughts first" else null
+            if (!force) {
+                if (!personaStore.enabled.value) return null
+                val current = personaStore.persona.value
+                if (current != null && count - current.dumpCount < Persona.REFRESH_EVERY) return null
+            }
+
+            _personaBuilding.value = true
+            val dumps = dao.recentDumps(Persona.MIN_DUMP_CHARS, PERSONA_SAMPLE_LIMIT)
+            val persona = try {
+                ai.describePersona(dumps)
+            } catch (e: SplitException) {
+                return e.message ?: "Gemini Nano couldn't read your style"
+            }
+            personaStore.save(persona.copy(dumpCount = count))
+            // Asking for it by hand is opting back in after a Forget.
+            if (force) personaStore.setEnabled(true)
+            return null
+        } finally {
+            _personaBuilding.value = false
+            personaMutex.unlock()
+        }
+    }
+
     private suspend fun drain() {
         val handled = HashSet<Long>()
 
@@ -135,7 +186,7 @@ class IdeaRepositoryImpl @Inject constructor(
                     val note = ai.polishIdea(
                         rawIdea = idea.rawInput,
                         image = pendingImages[id],
-                        identityProfile = personalIdentityProfile(excludeIdeaId = id),
+                        persona = personaStore.active,
                     )
                     pendingImages.remove(id)
                     dao.update(
@@ -175,34 +226,6 @@ class IdeaRepositoryImpl @Inject constructor(
         category = IdeaCategory.parse(category),
     )
 
-    private suspend fun personalIdentityProfile(excludeIdeaId: Long? = null): String {
-        val samples = dao.recentStyleSamples(limit = STYLE_SAMPLE_LIMIT, excludeId = excludeIdeaId)
-        if (samples.isEmpty()) return ""
-        val profile = buildString {
-            append("Writing identity profile (360 style-only): infer the user's preferred patterns and align to them.")
-            append(" Use this only for style; never copy personal facts.\n")
-            append("Identity aspects to align:\n")
-            IDENTITY_ASPECTS.forEachIndexed { index, aspect ->
-                append("- ").append(index + 1).append(". ").append(aspect).append('\n')
-            }
-            append("Recent notes to infer identity from:\n")
-            var index = 1
-            for (sample in samples) {
-                val excerpt = sample.body.replace(WHITESPACE, " ").trim().take(STYLE_EXCERPT_CHARS)
-                if (excerpt.isEmpty()) continue
-                append(index++).append(") ")
-                sample.category?.takeIf(String::isNotBlank)?.let {
-                    append("Category ").append(it).append("; ")
-                }
-                sample.ideaTitle?.takeIf(String::isNotBlank)?.let {
-                    append("Title \"").append(it.replace(WHITESPACE, " ").trim()).append("\"; ")
-                }
-                append("Excerpt: ").append(excerpt).append('\n')
-            }
-        }.trim()
-        return profile.take(STYLE_PROFILE_MAX_CHARS)
-    }
-
     /** The chat reply: what actually changed, read off the note rather than the model's word for it. */
     private fun describeChanges(before: IdeaNote, after: IdeaNote): String {
         val changes = ArrayList<String>()
@@ -221,21 +244,7 @@ class IdeaRepositoryImpl @Inject constructor(
         const val PHOTO_ONLY = "📸 pic dump"
         const val MAX_ATTEMPTS = 3
         const val DELETED = "This idea was deleted"
-        const val STYLE_SAMPLE_LIMIT = 4
-        const val STYLE_EXCERPT_CHARS = 220
-        const val STYLE_PROFILE_MAX_CHARS = 1_200
-        val IDENTITY_ASPECTS = listOf(
-            "Voice and persona",
-            "Tone and attitude",
-            "Mood and atmosphere",
-            "Emotional intensity and vulnerability",
-            "Creativity and imagination",
-            "Formality level",
-            "Structure and organization",
-            "Detail density",
-            "Directness and assertiveness",
-            "Reflection versus action orientation",
-        )
+        const val PERSONA_SAMPLE_LIMIT = 8
         val WHITESPACE = Regex("""\s+""")
     }
 }

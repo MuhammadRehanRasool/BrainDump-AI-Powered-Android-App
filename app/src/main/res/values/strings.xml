@@ -154,4 +154,40 @@ All on-device. Your dumps never touch the cloud.</string>
 
     <string name="day_today">Today</string>
     <string name="day_yesterday">Yesterday</string>
+
+    <string name="persona_title">Your persona</string>
+    <string name="persona_expand">Show persona</string>
+    <string name="persona_collapse">Hide persona</string>
+    <string name="persona_building">Reading your dumps on-device…</string>
+    <plurals name="persona_locked">
+        <item quantity="one">Dump %1$d more thought and Nano learns how you write</item>
+        <item quantity="other">Dump %1$d more thoughts and Nano learns how you write</item>
+    </plurals>
+    <string name="persona_not_learned">Not learned yet. Tap Learn my style.</string>
+    <string name="persona_voice">Voice</string>
+    <string name="persona_tone">Tone</string>
+    <string name="persona_mood">Mood</string>
+    <string name="persona_structure">Structure</string>
+    <string name="persona_detail">Detail</string>
+    <string name="persona_focus">Focus</string>
+    <string name="persona_use">Write my notes in this style</string>
+    <string name="persona_use_body">Only these few words go to Gemini Nano with each dump, never your other dumps.</string>
+    <plurals name="persona_learned">
+        <item quantity="one">Learned from %1$d dump · %2$s</item>
+        <item quantity="other">Learned from %1$d dumps · %2$s</item>
+    </plurals>
+    <string name="persona_learn">Learn my style</string>
+    <string name="persona_relearn">Re-learn</string>
+    <string name="persona_forget">Forget</string>
+    <plurals name="persona_stat_dumps">
+        <item quantity="one">📝 %1$d dump</item>
+        <item quantity="other">📝 %1$d dumps</item>
+    </plurals>
+    <string name="persona_stat_streak">🔥 %1$d-day streak</string>
+    <string name="persona_stat_words">💬 ~%1$d words a dump</string>
+    <string name="persona_stat_morning">🌅 Morning brain</string>
+    <string name="persona_stat_afternoon">☀️ Afternoon thinker</string>
+    <string name="persona_stat_evening">🌆 Evening dumper</string>
+    <string name="persona_stat_night">🌙 Night owl</string>
+    <string name="persona_mix">Mostly %1$s</string>
 </resources>

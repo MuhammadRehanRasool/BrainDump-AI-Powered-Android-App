@@ -7,6 +7,7 @@ import dev.braindump.splitter.di.ApplicationScope
 import dev.braindump.splitter.domain.model.AiStatus
 import dev.braindump.splitter.domain.model.Idea
 import dev.braindump.splitter.domain.model.IdeaCategory
+import dev.braindump.splitter.domain.model.Persona
 import dev.braindump.splitter.domain.model.RefineOutcome
 import dev.braindump.splitter.domain.repository.IdeaRepository
 import kotlinx.coroutines.CoroutineScope
@@ -34,7 +35,16 @@ data class DashboardUiState(
     val sections: List<DaySection> = emptyList(),
     val aiStatus: AiStatus = AiStatus.Unknown,
     val refine: RefineState = RefineState(),
+    val persona: PersonaUiState = PersonaUiState(),
     val isLoading: Boolean = true,
+)
+
+data class PersonaUiState(
+    val persona: Persona? = null,
+    val enabled: Boolean = true,
+    val building: Boolean = false,
+    /** Why the last refresh the user asked for didn't work. */
+    val error: String? = null,
 )
 
 /** The refine chat's request in flight, or the last one that failed (so it can be retried). */
@@ -52,16 +62,26 @@ class DashboardViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val refining = MutableStateFlow(RefineState())
+    private val personaError = MutableStateFlow<String?>(null)
+
+    private val personaState = combine(
+        repository.persona,
+        repository.personaEnabled,
+        repository.personaBuilding,
+        personaError,
+    ) { persona, enabled, building, error -> PersonaUiState(persona, enabled, building, error) }
 
     val uiState: StateFlow<DashboardUiState> = combine(
         repository.observeIdeas().map(::groupByDay).flowOn(Dispatchers.Default),
         repository.aiStatus,
         refining,
-    ) { sections, aiStatus, refineState ->
+        personaState,
+    ) { sections, aiStatus, refineState, persona ->
         DashboardUiState(
             sections = sections,
             aiStatus = aiStatus,
             refine = refineState,
+            persona = persona,
             isLoading = false,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardUiState())
@@ -90,11 +110,30 @@ class DashboardViewModel @Inject constructor(
         viewModelScope.launch {
             repository.warmUpAi()
             repository.splitPending()
+            // After the queue, so learning the persona never holds up a note.
+            repository.refreshPersona()
         }
     }
 
     fun capture(text: String, image: android.graphics.Bitmap?) {
-        appScope.launch { repository.captureAndSplit(text, image) }
+        appScope.launch {
+            repository.captureAndSplit(text, image)
+            repository.refreshPersona()
+        }
+    }
+
+    fun refreshPersona() {
+        personaError.value = null
+        appScope.launch { personaError.value = repository.refreshPersona(force = true) }
+    }
+
+    fun setPersonaEnabled(enabled: Boolean) {
+        repository.setPersonaEnabled(enabled)
+    }
+
+    fun forgetPersona() {
+        personaError.value = null
+        repository.forgetPersona()
     }
 
     fun retry(ideaId: Long) {

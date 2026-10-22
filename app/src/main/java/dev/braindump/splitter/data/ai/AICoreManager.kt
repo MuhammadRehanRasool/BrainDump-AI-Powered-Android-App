@@ -16,6 +16,8 @@ import com.google.mlkit.genai.prompt.generationConfig
 import com.google.mlkit.genai.prompt.modelConfig
 import dev.braindump.splitter.domain.model.AiStatus
 import dev.braindump.splitter.domain.model.IdeaCategory
+import dev.braindump.splitter.domain.model.Persona
+import dev.braindump.splitter.domain.model.PersonaAspect
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -120,8 +122,11 @@ class AICoreManager @Inject constructor(
         }
     }
 
-    /** Rewrites a rough dump (plus an optional photo, never stored) as a polished Markdown note. */
-    suspend fun polishIdea(rawIdea: String, image: Bitmap? = null, identityProfile: String? = null): IdeaNote {
+    /**
+     * Rewrites a rough dump (plus an optional photo, never stored) as a polished Markdown note,
+     * in the user's [persona] when there is one.
+     */
+    suspend fun polishIdea(rawIdea: String, image: Bitmap? = null, persona: Persona? = null): IdeaNote {
         val tuning = settings.tuning.value
         val input = sanitize(rawIdea, tuning.maxInputChars)
         if (input.isEmpty()) throw SplitException.EmptyInput()
@@ -132,7 +137,7 @@ class AICoreManager @Inject constructor(
                 tuning = tuning,
                 instruction = tuning.notePrompt,
                 retrySuffix = DefaultPrompts.NOTE_RETRY_SUFFIX,
-                userTurn = identityBlock(identityProfile) +
+                userTurn = styleBlock(persona) +
                     (if (image != null) IMAGE_HINT else "") +
                     "Dump: $INPUT_OPEN$input$INPUT_CLOSE\nNote:",
                 parse = { parseNote(it, tuning.maxTitleChars, fallbackTitle, fallbackCategory = null) },
@@ -149,7 +154,7 @@ class AICoreManager @Inject constructor(
         current: IdeaNote,
         originalDump: String,
         ask: String,
-        identityProfile: String? = null,
+        persona: Persona? = null,
     ): IdeaNote {
         val tuning = settings.tuning.value
         val request = sanitize(ask, tuning.maxAskChars)
@@ -162,7 +167,7 @@ class AICoreManager @Inject constructor(
                 tuning = tuning,
                 instruction = tuning.refinePrompt,
                 retrySuffix = DefaultPrompts.REFINE_RETRY_SUFFIX,
-                userTurn = identityBlock(identityProfile) +
+                userTurn = styleBlock(persona) +
                     "Note: $INPUT_OPEN$note$INPUT_CLOSE\n" +
                     "Original dump: $INPUT_OPEN$dump$INPUT_CLOSE\n" +
                     "Request: $INPUT_OPEN$request$INPUT_CLOSE\nUpdated note:",
@@ -171,23 +176,60 @@ class AICoreManager @Inject constructor(
         )
     }
 
-    private fun identityBlock(identityProfile: String?): String {
-        val profile = identityProfile?.trim().orEmpty()
-        if (profile.isEmpty()) return ""
-        return "Identity profile (style only, never facts): $INPUT_OPEN$profile$INPUT_CLOSE\n"
+    /**
+     * Reads how the user writes from their own [dumps], newest first. Only the persona's
+     * few short descriptors ever reach later prompts, never the dumps themselves, so one
+     * note's facts can't leak into another.
+     */
+    suspend fun describePersona(dumps: List<String>): Persona {
+        val tuning = settings.tuning.value
+        val joined = buildString {
+            for (dump in dumps) {
+                val text = sanitize(dump).replace(WHITESPACE, " ").take(PERSONA_DUMP_CHARS)
+                if (text.isEmpty() || length + text.length > PERSONA_INPUT_CHARS) continue
+                if (isNotEmpty()) append("\n---\n")
+                append(text)
+            }
+        }
+        if (joined.isEmpty()) throw SplitException.EmptyInput()
+        val used = joined.split("\n---\n").size
+
+        return infer(
+            Prompt(
+                // Cool and short: a few descriptors, in a fixed format.
+                tuning = tuning.copy(
+                    temperature = tuning.temperature.coerceAtMost(0.3f),
+                    maxOutputTokens = tuning.maxOutputTokens.coerceIn(PERSONA_MIN_TOKENS, PERSONA_MAX_TOKENS),
+                ),
+                instruction = DefaultPrompts.PERSONA,
+                retrySuffix = DefaultPrompts.PERSONA_RETRY_SUFFIX,
+                userTurn = "Dumps: $INPUT_OPEN$joined$INPUT_CLOSE\nStyle:",
+                parse = { parsePersona(it, used) },
+            )
+        )
+    }
+
+    /** One line of short descriptors; empty when there's no persona to write in. */
+    private fun styleBlock(persona: Persona?): String {
+        if (persona == null) return ""
+        val traits = PersonaAspect.entries.mapNotNull { aspect ->
+            persona.traits[aspect]?.let { "${aspect.name.lowercase()}: ${sanitize(it)}" }
+        }
+        if (traits.isEmpty()) return ""
+        return "Style: $INPUT_OPEN${traits.joinToString("; ")}$INPUT_CLOSE\n"
     }
 
     /** One kind of request: its rules, the user turn, and how to read the answer. */
-    private class Prompt(
+    private class Prompt<T : Any>(
         val tuning: AiTuning,
         val instruction: String,
         val retrySuffix: String,
         val userTurn: String,
-        val parse: (String) -> IdeaNote?,
+        val parse: (String) -> T?,
         val image: Bitmap? = null,
     )
 
-    private suspend fun infer(prompt: Prompt): IdeaNote =
+    private suspend fun <T : Any> infer(prompt: Prompt<T>): T =
         mutex.withLock {
             val featureStatus = try {
                 checkStatusLocked()
@@ -244,7 +286,7 @@ class AICoreManager @Inject constructor(
      * Tries every other build AICore can serve right now. One that returns a note becomes
      * the active model for the rest of the session, so later splits go straight to it.
      */
-    private suspend fun splitWithOtherModelsLocked(prompt: Prompt): IdeaNote? {
+    private suspend fun <T : Any> splitWithOtherModelsLocked(prompt: Prompt<T>): T? {
         val current = activeOption
         for (option in fallbackOptions()) {
             if (option == current || option in brokenOptions) continue
@@ -289,7 +331,7 @@ class AICoreManager @Inject constructor(
 
     private suspend fun generate(
         model: GenerativeModel,
-        prompt: Prompt,
+        prompt: Prompt<*>,
         retry: Boolean,
         useSystemInstruction: Boolean,
     ): String? {
@@ -538,6 +580,35 @@ class AICoreManager @Inject constructor(
         )
     }
 
+    /**
+     * Reads "Voice: casual, first person" lines, tolerating bullets, bold keys and stray
+     * brackets. Null unless at least [MIN_PERSONA_TRAITS] aspects came back.
+     */
+    internal fun parsePersona(modelOutput: String, basedOn: Int): Persona? {
+        val traits = LinkedHashMap<PersonaAspect, String>()
+        var summary = ""
+        for (line in modelOutput.replace("\r\n", "\n").lines()) {
+            val match = PERSONA_LINE.matchEntire(line.trim()) ?: continue
+            val key = match.groupValues[1].lowercase()
+            val value = match.groupValues[2].trim().trim('*', '_', '"', '<', '>', '[', ']', '.', ' ')
+            if (value.isEmpty()) continue
+            if (key == "summary") {
+                if (summary.isEmpty()) summary = value.take(PERSONA_SUMMARY_CHARS)
+                continue
+            }
+            val aspect = PersonaAspect.entries.firstOrNull { it.name.lowercase() == key } ?: continue
+            traits.putIfAbsent(aspect, value.take(PERSONA_TRAIT_CHARS))
+        }
+        if (traits.size < MIN_PERSONA_TRAITS) return null
+        return Persona(
+            traits = traits,
+            summary = summary,
+            basedOn = basedOn,
+            dumpCount = 0,
+            updatedAt = System.currentTimeMillis(),
+        )
+    }
+
     /** The note the way the model writes it, so a refine can edit it in place. */
     private fun noteText(note: IdeaNote): String =
         "Category: ${note.category.name.lowercase().replaceFirstChar { it.titlecase() }}\n# ${note.title}\n\n${note.body}"
@@ -563,6 +634,16 @@ class AICoreManager @Inject constructor(
 
         /** "# Title" (up to ###) or a line that is entirely bold. */
         val TITLE_LINE = Regex("""^(?:#{1,3}\s+(.+?)\s*#*|\*\*([^*]+)\*\*)$""")
+
+        /** "Voice: casual", also as "- **Voice**: casual". */
+        val PERSONA_LINE = Regex("""^[-*•\d.)\s]*\**([A-Za-z]+)\**\s*:\s*(.+)$""")
+        const val MIN_PERSONA_TRAITS = 3
+        const val PERSONA_TRAIT_CHARS = 60
+        const val PERSONA_SUMMARY_CHARS = 200
+        const val PERSONA_DUMP_CHARS = 400
+        const val PERSONA_INPUT_CHARS = 2_400
+        const val PERSONA_MIN_TOKENS = 160
+        const val PERSONA_MAX_TOKENS = 256
 
         val EXTRA_BLANK_LINES = Regex("""\n{3,}""")
         val WHITESPACE = Regex("""\s+""")

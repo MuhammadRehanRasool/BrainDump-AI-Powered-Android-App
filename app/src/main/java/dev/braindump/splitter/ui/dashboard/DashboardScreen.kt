@@ -99,9 +99,21 @@ fun DashboardRoute(onOpenSettings: () -> Unit, viewModel: DashboardViewModel = h
         onCategoryChange = viewModel::setCategory,
         onRefine = viewModel::refine,
         onClearRefineError = viewModel::clearRefineError,
+        persona = PersonaActions(
+            onRefresh = viewModel::refreshPersona,
+            onEnabledChange = viewModel::setPersonaEnabled,
+            onForget = viewModel::forgetPersona,
+        ),
         onOpenSettings = onOpenSettings,
     )
 }
+
+/** What the persona card can ask for. */
+class PersonaActions(
+    val onRefresh: () -> Unit,
+    val onEnabledChange: (Boolean) -> Unit,
+    val onForget: () -> Unit,
+)
 
 @Composable
 fun DashboardScreen(
@@ -112,6 +124,7 @@ fun DashboardScreen(
     onCategoryChange: (Long, IdeaCategory) -> Unit,
     onRefine: (Long, String) -> Unit,
     onClearRefineError: () -> Unit,
+    persona: PersonaActions,
     onOpenSettings: () -> Unit,
 ) {
     // Null while closed; otherwise whether the sheet starts dictating.
@@ -203,6 +216,7 @@ fun DashboardScreen(
                         onDelete = onDelete,
                         onCategoryChange = onCategoryChange,
                         onOpenRefine = { refiningId = it },
+                        persona = persona,
                     )
 
                     TimelineMode.MONTHS -> MonthsGrid(
@@ -274,16 +288,18 @@ private fun DaysList(
     onDelete: (Long) -> Unit,
     onCategoryChange: (Long, IdeaCategory) -> Unit,
     onOpenRefine: (Long) -> Unit,
+    persona: PersonaActions,
 ) {
     val today = todayEpochDay()
     val aiStatus = state.aiStatus
     val showBanner = aiStatus is AiStatus.Unavailable || aiStatus is AiStatus.Downloading
     val showEmpty = !state.isLoading && state.sections.isEmpty()
+    val showPersona = state.sections.isNotEmpty()
 
     LaunchedEffect(scrollToMonth) {
         val month = scrollToMonth ?: return@LaunchedEffect
-        // Item order below: banner, empty state, then a header plus its ideas per day.
-        var index = (if (showBanner) 1 else 0) + (if (showEmpty) 1 else 0)
+        // Item order below: banner, empty state, persona, then a header plus its ideas per day.
+        var index = (if (showBanner) 1 else 0) + (if (showEmpty) 1 else 0) + (if (showPersona) 1 else 0)
         for (section in sections) {
             if (YearMonth.from(LocalDate.ofEpochDay(section.epochDay)) == month) break
             index += 1 + section.ideas.size
@@ -312,6 +328,22 @@ private fun DaysList(
         if (showEmpty) {
             item(key = "empty", contentType = "empty") {
                 EmptyState(Modifier.fillParentMaxHeight(0.7f))
+            }
+        }
+
+        if (showPersona) {
+            item(key = "persona", contentType = "persona") {
+                // All ideas, not the filtered ones: the persona is about the whole person.
+                PersonaCard(
+                    state = state.persona,
+                    sections = state.sections,
+                    onRefresh = persona.onRefresh,
+                    onEnabledChange = persona.onEnabledChange,
+                    onForget = persona.onForget,
+                    modifier = Modifier
+                        .animateItem()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                )
             }
         }
 

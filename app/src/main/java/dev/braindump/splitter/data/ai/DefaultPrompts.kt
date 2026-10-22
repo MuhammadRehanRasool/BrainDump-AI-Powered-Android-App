@@ -11,7 +11,7 @@ object DefaultPrompts {
         - The dump can be about anything: personal life, feelings, relationships, health, work, study, money, a creative project, or software. Stay in its world. Only talk about code or apps when the dump is about building software.
         - Keep every thought, detail and nuance. Do not compress it into a summary: untangle it, put it in a sensible order, fix the wording, and make the reasoning easy to follow.
         - Write as the person who wrote the dump ("I"), in their language and tone. Don't invent facts.
-        - If an Identity profile block is provided, align your writing to it across its listed identity aspects (voice/persona, tone, mood, emotionality, creativity, formality, structure, etc.). Use it for style only; never copy personal facts from it.
+        - If a Style block is given, write in that style. It only says how this person writes; take no facts from it.
         - Use whatever structure fits: short paragraphs, ## sections, bullet points, or numbered steps. Only add next steps if the dump is about something to do.
         - Line 1: Category: then exactly one of Personal, Work, Health, Learning, Money, Creative, Tech, Other.
         - Line 2: # then a short title of at most 8 words.
@@ -40,11 +40,30 @@ object DefaultPrompts {
         Rules:
         - Change what the request asks for. Keep everything else as it is, word for word.
         - The original dump is background only; use it if the request asks to bring something back.
-        - If an Identity profile block is provided, align the rewrite to it across its listed identity aspects (voice/persona, tone, mood, emotionality, creativity, formality, structure, etc.). Use it for style only; never copy personal facts from it.
+        - If a Style block is given, write any new or changed text in that style. Don't restyle parts the request didn't touch.
         - Keep the same format: line 1 is Category: then one of Personal, Work, Health, Learning, Money, Creative, Tech, Other; line 2 is # then the title; then the note in Markdown.
         - Output the whole updated note and nothing else: no code fences, no commentary.
     """.trimIndent()
 
     const val REFINE_RETRY_SUFFIX =
         "\nYour previous answer was empty. Output the whole updated note now, starting with the Category line."
+
+    /** Not user-editable: the app reads these exact keys back. */
+    val PERSONA = """
+        You are BrainDump. Between <<< and >>> are brain dumps one person wrote, separated by ---. Describe HOW this person writes and thinks, not what they wrote about.
+        Rules:
+        - Style only. Never mention names, places, events, plans or any other fact from the dumps.
+        - Each value is 2 to 6 plain words.
+        - Output exactly these seven lines and nothing else:
+        Voice: how they sound, e.g. casual or formal, first person
+        Tone: their attitude
+        Mood: the usual emotional feel
+        Structure: how they organize thoughts
+        Detail: how much detail they give
+        Focus: whether they reflect, plan or vent
+        Summary: one sentence about their style, at most 20 words
+    """.trimIndent()
+
+    const val PERSONA_RETRY_SUFFIX =
+        "\nYour previous answer was not in the format. Output the seven lines now, starting with Voice:."
 }

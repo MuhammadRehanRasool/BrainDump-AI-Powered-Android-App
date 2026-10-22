@@ -414,7 +414,7 @@ private fun CategoryPicker(current: IdeaCategory, onPick: (IdeaCategory) -> Unit
 }
 
 @Composable
-private fun ActionPill(icon: ImageVector, label: String, tint: Color, onClick: () -> Unit) {
+internal fun ActionPill(icon: ImageVector, label: String, tint: Color, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val scale = rememberPressScale(interaction, pressedScale = 0.92f)
     Row(

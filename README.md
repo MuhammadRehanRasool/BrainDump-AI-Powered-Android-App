@@ -7,6 +7,7 @@
 1. **Capture.** Use the Quick Settings tile, the home-screen widget (resizes from a single mic button up to a 2x2 card), a launcher shortcut (long-press the icon), or the Dump and mic buttons. Voice runs through the phone's on-device speech recognizer and fills the text box live.
 2. **Polish.** The dump goes into Room, then straight to Gemini Nano via the ML Kit GenAI Prompt API while the sheet is still open. Then the sheet closes and a toast shows the title. If the active Nano build returns nothing, the other builds AICore has installed are tried, and the one that works is used from then on.
 3. **Read and refine.** The dashboard groups notes by day. Tap a card to read the whole note, chat with Gemini Nano to change it, or share it as Markdown. Settings has export, shortcuts, and every prompt and limit the model runs with.
+4. **Persona.** After 3 dumps, Gemini Nano reads your own raw words (never its notes) and sums up how you write: voice, tone, mood, structure, detail and focus. That short card, not your other dumps, goes along with each new dump so notes sound like you. It's re-learned every 5 dumps; the "Your persona" card on Home shows it with a few stats and lets you turn it off, re-learn it, or forget it.
 
 Gemini Nano only answers apps in the foreground. If you swipe the sheet away mid-polish, or the model isn't ready, the dump is kept and polished the next time you open the app. Failed ideas get a Retry button.
 

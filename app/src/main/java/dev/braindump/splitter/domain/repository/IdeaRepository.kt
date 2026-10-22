@@ -4,6 +4,7 @@ import dev.braindump.splitter.domain.model.AiStatus
 import dev.braindump.splitter.domain.model.CaptureOutcome
 import dev.braindump.splitter.domain.model.Idea
 import dev.braindump.splitter.domain.model.IdeaCategory
+import dev.braindump.splitter.domain.model.Persona
 import dev.braindump.splitter.domain.model.RefineOutcome
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,4 +45,24 @@ interface IdeaRepository {
 
     /** Saves the choice, re-selects the model and splits anything that was waiting. */
     suspend fun setUsePreviewModel(enabled: Boolean)
+
+    /** How the user writes, learned from their dumps; null until there are enough of them. */
+    val persona: StateFlow<Persona?>
+
+    /** Whether new notes and refines are written in the [persona]'s style. */
+    val personaEnabled: StateFlow<Boolean>
+
+    /** True while Gemini Nano is reading the dumps. */
+    val personaBuilding: StateFlow<Boolean>
+
+    fun setPersonaEnabled(enabled: Boolean)
+
+    /** Drops the learned persona and stops learning it until [refreshPersona] is forced. */
+    fun forgetPersona()
+
+    /**
+     * Re-learns the persona when it's missing or [Persona.REFRESH_EVERY] dumps old, or always
+     * with [force]. Returns why it couldn't, or null. Call while the app is in the foreground.
+     */
+    suspend fun refreshPersona(force: Boolean = false): String?
 }
